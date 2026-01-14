@@ -187,6 +187,10 @@ main() {
     # Commit changes
     print_info "Committing version bump..."
     git add "$PYPROJECT_TOML"
+    # Also add uv.lock if it was modified during the build
+    if [[ -n $(git diff --name-only uv.lock 2>/dev/null) ]]; then
+        git add uv.lock
+    fi
     git commit -m "chore: bump version to $new_version"
 
     # Create tag

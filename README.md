@@ -18,14 +18,20 @@ This lets you ask questions like "show me all data flowing from web requests to 
 ## Quick Start
 
 ```bash
-# Install hoppy (Joern is downloaded automatically on first run)
-pip install hoppy
+# Install hoppy with uv (recommended)
+uvx --from git+https://github.com/quangio/hoppy hoppy scan ./path/to/code --lang python
+
+# Or install from git with uv
+uv pip install git+https://github.com/quangio/hoppy.git
+
+# Or install from git with pip
+pip install git+https://github.com/quangio/hoppy.git
 
 # Run a security scan on your code
 hoppy scan ./path/to/code --lang python
 
 # Or use it as a library
-python - <<'EOF'
+uv run --from git+https://github.com/quangio/hoppy python - <<'EOF'
 from hoppy import Analyzer, Query, Call, Var
 
 with Analyzer() as analyzer:
@@ -42,6 +48,7 @@ EOF
 ### Requirements
 
 - **Python 3.12+** - The project uses modern Python features and type hints.
+- **uv** (recommended) - Fast Python package installer: https://github.com/astral-sh/uv
 
 ### How Hoppy Installs Joern
 
@@ -53,10 +60,10 @@ Hoppy automatically downloads and installs Joern to `~/.joern` on first run. No 
 
 If you already have Joern installed and in your PATH, Hoppy will use that version instead.
 
-### Install from source
+### Development Installation
 
 ```bash
-git clone https://github.com/yourusername/hoppy.git
+git clone https://github.com/quangio/hoppy.git
 cd hoppy
 uv sync
 ```
