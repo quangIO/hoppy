@@ -1,0 +1,41 @@
+    @safe
+    def send_command(self, cmd: str) -> str:
+        """Sends a command and returns the raw output."""
+        start_time = time.time()
+        try:
+            if self.use_server:
+                response = requests.post(
+                    f"{self.server_url}/query-sync",
+                    json={"query": cmd},
+                    timeout=120,
+                )
+                response.raise_for_status()
+                stdout = str(response.json().get("stdout", ""))
+                return self._strip_ansi(stdout)
+
+            with self._lock:
+                if not self.process or self.process.poll() is not None:
+                    raise RuntimeError("Joern session is not active")
+
+                if not self.process.stdin or not self.process.stdout:
+                    raise RuntimeError("Joern process streams are not available")
+
+                # Send the command as is. Joern's REPL can handle multi-line input
+                # if sent correctly.
+                self.process.stdin.write(cmd + "\n")
+                self.process.stdin.flush()
+
+                # Read until prompt
+                buffer = ""
+                while True:
+                    char = self.process.stdout.read(1)
+                    if not char:
+                        break
+                    buffer += char
+                    if "joern>" in buffer:
+                        # Capture everything BEFORE the first joern> prompt
+                        output_str = buffer[: buffer.find("joern>")].strip()
+                        return self._strip_ansi(output_str)
+                return self._strip_ansi(buffer)
+        finally:
+            self.last_duration = time.time() - start_time

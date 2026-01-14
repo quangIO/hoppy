@@ -1,0 +1,47 @@
+[project]
+name = "hoppy"
+version = "0.1.0"
+description = "A grep-like tool for Joern CPGs"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "pydantic>=2.12.5",
+    "requests>=2.32.5",
+    "returns>=0.26.0",
+    "rich>=14.2.0",
+    "tree-sitter>=0.25.2",
+    "tree-sitter-c-sharp>=0.23.1",
+    "tree-sitter-java>=0.23.5",
+    "typer>=0.21.0",
+]
+
+[project.scripts]
+hoppy = "hoppy.cli:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.2",
+    "pytest-xdist>=3.8.0",
+    "ruff>=0.14.10",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP"]
+ignore = [
+    "N815",  # Variable names in class scope should not be mixedCase (Joern uses camelCase)
+    "UP040",  # TypeAlias annotation (prefer X | Y syntax over TypeAlias for now)
+]
+
+[tool.ruff.lint.per-file-ignores]
+"src/hoppy/sarif.py" = ["UP040"]  # SARIF types use TypeAlias for complex unions
+"src/hoppy/rules/**/*.py" = ["N802", "E501"]  # Factory functions use PascalCase, and security rules have long descriptions
+
+[build-system]
+requires = ["uv-build"]
+build-backend = "uv_build"
+
+[tool.uv.sources]
