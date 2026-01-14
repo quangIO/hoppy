@@ -224,14 +224,14 @@ scripts/run_joern_server_tests.sh
 
 ## Limitations
 
-- **First run setup**: Hoppy automatically downloads Joern (approximately 200MB) on first run if not found in your PATH.
+- **First run setup**: Hoppy automatically downloads Joern on first run if not found in your PATH.
 - **Performance**: CPG generation is resource-intensive. For large codebases, the initial parse can take minutes. Use `build_cpg()` / `load_cpg()` if you're running many queries on the same code.
 
 ## Contributing
 
 Contributions welcome. Areas that need work:
 
-- More language frontends (Go, Rust, etc.)
+- More language frontends (Go, Kotlin, C, C++, etc.)
 - Better Python support
 - More built-in rules
 - Performance improvements
@@ -239,6 +239,5 @@ Contributions welcome. Areas that need work:
 
 See AGENTS.md for technical details on the codebase if you're working on it.
 
-## License
-
-MIT
+## Disclaimer
+This project is mostly vibe-coded after initial manual implementation seed.
