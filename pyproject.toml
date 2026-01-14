@@ -1,6 +1,6 @@
 [project]
 name = "hoppy"
-version = "0.1.1"
+version = "0.1.2"
 description = "A grep-like tool for Joern CPGs"
 readme = "README.md"
 requires-python = ">=3.12"
