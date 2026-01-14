@@ -103,6 +103,19 @@ def SqlSink() -> Pattern:
     )
 
 
+def StackedSqlSink() -> Pattern:
+    """
+    Matches SQL execution sinks that explicitly allow stacked queries.
+    """
+    arg = DynamicArg("$SQL")
+    return Or(
+        [
+            Call(name="executescript", args=[arg]),
+            Call(fullname=r".*executescript.*", args=[arg]),
+        ]
+    )
+
+
 def PathTraversalSink() -> Pattern:
     """
     Matches file system access sinks with dynamic arguments.
@@ -307,6 +320,13 @@ def get_scan_rules(coverage: str = "precision") -> list[ScanRule]:
             severity=Severity.high,
             root_cause="Untrusted input is used to construct a SQL query.",
             impact="Unauthorized data access, modification, or deletion.",
+        ),
+        ScanRule(
+            name="SQL Injection (Stacked Queries)",
+            query=Query.source(source).flows_to(StackedSqlSink()).passes_not(sanitizer),
+            severity=Severity.high,
+            root_cause="Untrusted input reaches a SQL API that executes multiple statements.",
+            impact="Attackers can chain statements (e.g., DROP/UPDATE) after the intended query.",
         ),
         ScanRule(
             name="Path Traversal",

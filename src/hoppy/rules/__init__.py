@@ -17,6 +17,16 @@ def SqlSink(coverage: str = "precision") -> Pattern:  # noqa: N802
     )
 
 
+def StackedSqlSink() -> Pattern:  # noqa: N802
+    """Cross-language stacked query sinks."""
+    return Or(
+        [
+            python.StackedSqlSink(),
+            javascript.StackedSqlSink(),
+        ]
+    )
+
+
 def CommandSink() -> Pattern:  # noqa: N802
     """Cross-language command injection sinks."""
     return Or([java.CommandSink(), python.CommandSink(), javascript.CommandSink()])
@@ -153,6 +163,13 @@ def get_scan_rules(language: str | None = None, coverage: str = "precision") -> 
             root_cause="User input reaches a SQL execution sink without proper "
             "parameterization or sanitization.",
             impact="Unauthorized data access or database compromise.",
+        ),
+        ScanRule(
+            name="SQL Injection (Stacked Queries)",
+            query=Query.source(source).flows_to(StackedSqlSink()).passes_not(sanitizer),
+            severity=Severity.high,
+            root_cause="User input reaches a SQL API that executes multiple statements.",
+            impact="Attackers can chain statements (e.g., DROP/UPDATE) after the intended query.",
         ),
         ScanRule(
             name="Command Injection",

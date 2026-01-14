@@ -145,6 +145,26 @@ def SqlSink(coverage: str = "precision") -> Pattern:
     )
 
 
+def StackedSqlSink() -> Pattern:
+    """
+    Matches SQL execution sinks that explicitly allow stacked queries in JavaScript.
+    """
+    arg = DynamicArg("$SQL")
+    return Or(
+        [
+            Call(
+                fullname=(
+                    r".*(sqlite3.*[:\.]exec"
+                    r"|better-sqlite3.*[:\.]exec"
+                    r"|mssql.*[:\.]batch"
+                    r"|tedious.*[:\.]execSqlBatch).*"
+                ),
+                args=[arg],
+            ),
+        ]
+    )
+
+
 def SsrfSink(coverage: str = "precision") -> Pattern:
     """
     Matches SSRF sinks in JavaScript.
@@ -198,6 +218,10 @@ def PathTraversalSanitizer() -> Pattern:
     base_dir_identifier = Identifier(name=base_dir_names)
     base_dir_call = Call(fullname=r".*process.*[:\.](cwd).*")
     base_dir = base_dir_identifier | base_dir_call | Identifier(name="__dirname")
+    multer_path = Field(receiver=Identifier(name="req").field("file|files"), name="path") | Field(
+        receiver=Identifier(name="request").field("file|files"),
+        name="path",
+    )
 
     return Or(
         [
@@ -210,6 +234,7 @@ def PathTraversalSanitizer() -> Pattern:
                 fullname=r".*path.*[:\.](resolve|join).*",
                 args=[base_dir],
             ),
+            multer_path,
         ]
     )
 
@@ -386,6 +411,13 @@ def get_scan_rules(coverage: str = "precision") -> list[ScanRule]:
             severity=Severity.high,
             root_cause="Untrusted input is used to construct a SQL query.",
             impact="Unauthorized data access, modification, or deletion.",
+        ),
+        ScanRule(
+            name="SQL Injection (Stacked Queries)",
+            query=Query.source(source).flows_to(StackedSqlSink()).passes_not(sanitizer),
+            severity=Severity.high,
+            root_cause="Untrusted input reaches a SQL API that executes multiple statements.",
+            impact="Attackers can chain statements (e.g., DROP/UPDATE) after the intended query.",
         ),
         ScanRule(
             name="Path Traversal",
