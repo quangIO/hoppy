@@ -183,11 +183,11 @@ q = (Query.source(rules.WebSource())
 ### Pattern types
 
 - `Call(name="func")` - Function/method calls
-- `Literal("value")` - Literal values (or `Literal("$X")` for metavariables)
+- `Literal("value")` - Literal values
 - `Identifier("var")` - Variable references
 - `Method(name="func")` - Method definitions
 - `Field(name="field")` - Field accesses
-- `Var("$X")` - Wildcard (matches anything)
+- `Var("$X")` - Metavariables
 - `And([p1, p2])` / `Or([p1, p2])` / `Not(p)` - Logical composition
 - `Inside(pattern)` - Match within a context (e.g., method)
 - `DominatedBy(pattern)` - Match preceded by pattern in control flow
