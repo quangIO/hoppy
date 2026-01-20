@@ -160,8 +160,13 @@ class Analyzer:
         """List all unique function calls matching a regex pattern (name or methodFullName)."""
         esc_pattern = json.dumps(pattern)[1:-1]
         scala = (
-            f'ujson.Arr(cpg.call.filter(c => c.name.matches("{esc_pattern}") || '
-            f'c.methodFullName.matches("{esc_pattern}")).methodFullName.distinct.l'
+            f'ujson.Arr(cpg.call.filter(c => (c.name.matches("{esc_pattern}") || '
+            f'c.methodFullName.matches("{esc_pattern}")) && '
+            f'!c.name.startsWith("<operator>") && '
+            f'!c.methodFullName.startsWith("<operator>") && '
+            f'!c.methodFullName.contains("\\n") && '
+            f'!c.methodFullName.contains("{{")'
+            f").methodFullName.distinct.l"
             f".map(v => v: ujson.Value)*)"
         )
         return (
@@ -174,8 +179,13 @@ class Analyzer:
         """List all method definitions matching a regex pattern (name or fullName)."""
         esc_pattern = json.dumps(pattern)[1:-1]
         scala = (
-            f'ujson.Arr(cpg.method.filter(m => m.name.matches("{esc_pattern}") || '
-            f'm.fullName.matches("{esc_pattern}")).fullName.distinct.l'
+            f'ujson.Arr(cpg.method.filter(m => (m.name.matches("{esc_pattern}") || '
+            f'm.fullName.matches("{esc_pattern}")) && '
+            f'!m.name.startsWith("<operator>") && '
+            f'!m.fullName.startsWith("<operator>") && '
+            f'!m.fullName.contains("\\n") && '
+            f'!m.fullName.contains("{{")'
+            f").fullName.distinct.l"
             f".map(v => v: ujson.Value)*)"
         )
         return (

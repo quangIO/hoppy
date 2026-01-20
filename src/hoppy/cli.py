@@ -366,9 +366,33 @@ def list_methods_cmd(
             raise typer.Exit(1)
 
         methods = result.unwrap()
-        console.print(f"\n[bold]{title} matching '{pattern}':[/bold]\n")
-        for m in sorted(methods):
-            console.print(f"  {m}")
+
+        # Group by simple name for better discovery
+        grouped = {}
+        for m in methods:
+            # Heuristic extraction of simple name
+            parts = m.split(":")
+            candidate = parts[-1]
+
+            # If candidate looks like a signature (has parens), try previous part
+            if "(" in candidate or ")" in candidate:
+                if len(parts) > 1:
+                    candidate = parts[-2]
+
+            # If candidate is a path/package, take the last part
+            if "/" in candidate:
+                candidate = candidate.split("/")[-1]
+            if "." in candidate:
+                candidate = candidate.split(".")[-1]
+
+            grouped.setdefault(candidate, []).append(m)
+
+        console.print(f"\n[bold]{title} matching '{pattern}' (grouped by name):[/bold]\n")
+
+        for name in sorted(grouped.keys()):
+            console.print(f"[bold cyan]{name}[/bold cyan]")
+            for m in sorted(grouped[name]):
+                console.print(f"  {m}")
 
 
 @app.command(name="method-details")
