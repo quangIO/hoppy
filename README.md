@@ -37,7 +37,7 @@ from hoppy import Analyzer, Query, Call, Var
 with Analyzer() as analyzer:
     analyzer.load_code("./path/to/code")
     q = Query.source(Var("$IN")).flows_to(Call(name="sink"))
-    results = analyzer.execute(q)
+    results = analyzer.execute(q).unwrap()
     for match in results:
         print(f"{match.file}:{match.line} - {match.code}")
 EOF
@@ -141,7 +141,7 @@ with Analyzer() as analyzer:
 
     # Use predefined rules for common patterns
     q = Query.source(rules.WebSource()).flows_to(rules.SqlSink())
-    results = analyzer.execute(q)
+    results = analyzer.execute(q).unwrap()
 
     for match in results:
         print(f"{match.file}:{match.line}")
@@ -161,7 +161,7 @@ from hoppy import Query, Call, Literal, Identifier, And, Or, Not
 q = Query.source(Call(name="dangerous_func"))
 
 # Match with argument patterns
-q = Query.source(Call(name="execute", args=[Literal("$X")]))
+q = Query.source(Call(name="execute", args=[Var("$X")]))
 
 # Compose patterns
 pattern = And([
@@ -178,6 +178,39 @@ q = (Query.source(Call(name="get_input"))
 q = (Query.source(rules.WebSource())
      .flows_to(rules.CommandSink())
      .passes_not(rules.Sanitizer()))
+```
+
+### Reporting Results
+
+You can use the built-in `ConsoleReporter` to print beautiful reports:
+
+```python
+from hoppy import Analyzer, Query, Call, Var
+from hoppy.reporting import ConsoleReporter
+from hoppy.core.rule import ScanRule, Severity, Confidence
+
+with Analyzer() as analyzer:
+    analyzer.load_code("./src")
+
+    # Define query
+    q = Query.source(Var("$IN")).flows_to(Call(name="sink"))
+
+    # Execute
+    results = analyzer.execute(q).unwrap()
+
+    # Create a rule definition for the report
+    rule = ScanRule(
+        name="Dangerous Sink",
+        query=q,
+        severity=Severity.high,
+        confidence=Confidence.high,
+        description="Untrusted input reaching sink"
+    )
+
+    # Report
+    reporter = ConsoleReporter(base_path=".")
+    reporter.report(rule, results)
+    reporter.finalize()
 ```
 
 ### Pattern types

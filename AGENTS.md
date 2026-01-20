@@ -103,7 +103,7 @@ with Analyzer() as analyzer:
     analyzer.load_code("./path/to/code")
     # Using rules module is often easier than manual patterns
     q = Query.source(rules.WebSource()).flows_to(rules.SqlSink())
-    results = analyzer.execute(q)
+    results = analyzer.execute(q).unwrap()
     for match in results:
         print(f"{match.file}:{match.line} - {match.code}")
 ```
@@ -239,7 +239,7 @@ class TestFeature(unittest.TestCase):
         with Analyzer() as analyzer:
             analyzer.load_code("./test_app/sample.py")
             q = Query.source(Call(name="target"))
-            results = analyzer.execute(q)
+            results = analyzer.execute(q).unwrap()
 
             self.assertEqual(len(results), expected_count)
             self.assertEqual(results[0].line, expected_line)
@@ -288,7 +288,7 @@ results = analyzer.execute(q)
 # ✅ Correct
 with Analyzer() as analyzer:
     analyzer.load_code("...")
-    results = analyzer.execute(q)
+    results = analyzer.execute(q).unwrap()
 ```
 
 ### CPG Persistence
@@ -300,7 +300,7 @@ analyzer_builder.build_cpg("./src", "cpg.bin")
 # Load multiple times for faster testing
 with Analyzer() as analyzer:
     analyzer.load_cpg("cpg.bin")
-    results = analyzer.execute(q)
+    results = analyzer.execute(q).unwrap()
 ```
 
 ### File Paths
@@ -361,7 +361,7 @@ from hoppy.rules import get_scan_rules
 rules = get_scan_rules(language="java")
 for rule in rules:
     print(f"Running {rule.name}...")
-    results = analyzer.execute(rule.query)
+    results = analyzer.execute(rule.query).unwrap()
 ```
 ## Structural Metadata Extraction
 
