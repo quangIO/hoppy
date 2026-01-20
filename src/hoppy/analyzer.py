@@ -1,5 +1,5 @@
 import json
-from typing import Any, TypeVar, cast
+from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from returns.result import Failure, Result, safe
 
@@ -7,6 +7,9 @@ from .core.manager import JoernSession, JSONValue
 from .core.match import Match
 from .core.slicing import Slice
 from .dsl.query import Query
+
+if TYPE_CHECKING:
+    from .rules.discovery import DiscoveryHeuristic
 
 _T = TypeVar("_T")
 
@@ -384,99 +387,117 @@ class Analyzer:
             .map(self._group_api_summary)
         )
 
-    def discover_wrappers(self) -> Result[list[dict[str, Any]], Exception]:
+    def discover_wrappers(
+        self, heuristics: list["DiscoveryHeuristic"]
+    ) -> Result[list[dict[str, Any]], Exception]:
         """
         Heuristic scan to discover internal methods that wrap dangerous external APIs.
         Returns a list of wrappers with details about the dangerous calls they make.
         """
-        scala = r"""
-        import io.joern.dataflowengineoss.language._
-        import io.shiftleft.semanticcpg.language._
+        import json
 
-        // Use List of tuples to preserve order for category matching
-        val sinks = List(
-          "Command Execution" -> List(
-            ".*subprocess.*(run|call|check_call|check_output|Popen).*",
-            ".*os.*(system|popen|spawn|exec).*"
-          ),
-          "SQL Injection" -> List(
-            ".*(execute|raw|executescript).*",
-            ".*django\\.db\\.(models\\.query\\.QuerySet\\.raw|connection\\.cursor).*"
-          ),
-          "File System" -> List(
-            ".*(open).*",
-            ".*os.*(open|listdir|remove|rmdir|mkdir|makedirs).*",
-            ".*shutil\\.(copy|move).*"
-          ),
-          "Network" -> List(
-            ".*requests\\.(get|post|put|delete|patch|head|options|request).*",
-            ".*urllib\\.request\\.urlopen.*",
-            ".*aiohttp\\.ClientSession.*"
-          ),
-          "Code Injection" -> List(
-            ".*(exec|eval).*",
-            ".*ImageMath\\.eval.*",
-            ".*code\\.Interactive.*"
-          )
+        # Prepare heuristics for Scala
+        heuristics_json = json.dumps(
+            [
+                {
+                    "category": h.category,
+                    "patterns": h.patterns,
+                    "weight": h.weight,
+                    "suspicious_params": h.suspicious_params,
+                }
+                for h in heuristics
+            ]
         )
 
-        // Flatten patterns for initial filtering
-        val allPatterns = sinks.flatMap(_._2)
+        scala = f"""
+        import io.joern.dataflowengineoss.language._
+        import io.shiftleft.semanticcpg.language._
+        import ujson._
 
-        def getCategory(name: String, fullName: String): String = {
-             sinks.find { case (_, patterns) =>
-                patterns.exists(p => fullName.matches(p) || name.matches(p))
-             }.map(_._1).getOrElse("Unknown")
-        }
+        val heuristics = ujson.read(\"\"\"{heuristics_json}\"\"\").arr
+        val allPatterns = heuristics.flatMap(_.obj(\"patterns\").arr.map(_.str)).l
+
+        def getHeuristic(name: String, fullName: String) = {{
+             heuristics.find {{ h =>
+                h.obj(\"patterns\").arr.map(_.str)
+                 .exists(p => fullName.matches(p) || name.matches(p))
+             }}
+        }}
 
         val results = cpg.method
             .filter(m => !m.isExternal && !m.name.startsWith("<operator>"))
-            .where(_.file.name(".*")) // Ensure we have a file
-            .map { m =>
-                // Find potential dangerous calls in this method
+            .where(_.file.name(".*"))
+            .map {{ m =>
                 val dangerousCalls = m.call.filter(c =>
                     allPatterns.exists(p => c.methodFullName.matches(p) || c.name.matches(p))
                 ).l
 
-                // Check for flow from parameters to these calls
-                val flowConfirmed = dangerousCalls.flatMap { c =>
-                    // Check if argument is tainted by parameter
-                    // Also filter out calls with empty names/fullnames to avoid noise
+                val flowConfirmed = dangerousCalls.flatMap {{ c =>
                     if (c.name.nonEmpty &&
                         c.methodFullName.nonEmpty &&
-                        c.methodFullName != "<unknown>") {
+                        c.methodFullName != "<unknown>") {{
                          val taintingParams = m.parameter
                             .filter(p => c.argument.reachableBy(p).nonEmpty)
                             .name.l
-                         if (taintingParams.nonEmpty) {
+                         if (taintingParams.nonEmpty) {{
+                             val h = getHeuristic(c.name, c.methodFullName).get
+                             val baseWeight = h.obj(\"weight\").num.toInt
+                             val suspParams = h.obj(\"suspicious_params\").arr.map(_.str).toSet
+
+                             // Calculate score boost for suspicious parameter names
+                             val boost = if (taintingParams.exists(
+                                p => suspParams.contains(p.toLowerCase)
+                             )) 5 else 0
+                             val score = baseWeight + boost
+
                              Some(ujson.Obj(
-                                "name" -> c.name,
-                                "fullName" -> c.methodFullName,
-                                "category" -> getCategory(c.name, c.methodFullName),
-                                "line" -> c.lineNumber.getOrElse(-1),
-                                "taintedBy" -> taintingParams
+                                \"name\" -> c.name,
+                                \"fullName\" -> c.methodFullName,
+                                \"category\" -> h.obj(\"category\").str,
+                                \"score\" -> score,
+                                \"line\" -> c.lineNumber.getOrElse(-1),
+                                \"taintedBy\" -> taintingParams
                              ))
-                         } else {
+                         }} else {{
                              None
-                         }
-                    } else {
+                         }}
+                    }} else {{
                         None
-                    }
-                }.l
+                    }}
+                }}.l
 
                 (m, flowConfirmed)
-            }
+            }}
             .filter(_._2.nonEmpty)
-            .map { case (m, dangerousCalls) =>
+            .map {{ case (m, dangerousCalls) =>
+                 // Deduplicate calls by (category, fullName) while keeping max score
+                 // and union of tainting parameters
+                 val dedupedCalls = dangerousCalls.groupBy(c => 
+                    (c.obj(\"category\").str, c.obj(\"fullName\").str)
+                 ).map {{ case ((category, fullName), instances) =>
+                    val name = instances.head.obj(\"name\").str
+                    val maxScore = instances.map(_.obj(\"score\").num.toInt).max
+                    val allTaintedBy = instances.flatMap(_.obj(\"taintedBy\").arr.map(_.str)).distinct.l
+                    ujson.Obj(
+                      \"name\" -> name,
+                      \"fullName\" -> fullName,
+                      \"category\" -> category,
+                      \"score\" -> maxScore,
+                      \"taintedBy\" -> allTaintedBy
+                    )
+                 }}.l
+
+                 val maxScore = dedupedCalls.map(_.obj(\"score\").num.toInt).max
                  ujson.Obj(
-                   "name" -> m.name,
-                   "fullName" -> m.fullName,
-                   "file" -> m.filename,
-                   "line" -> m.lineNumber.getOrElse(-1),
-                   "params" -> m.parameter.name.l,
-                   "dangerousCalls" -> dangerousCalls
+                   \"name\" -> m.name,
+                   \"fullName\" -> m.fullName,
+                   \"file\" -> m.filename,
+                   \"line\" -> m.lineNumber.getOrElse(-1),
+                   \"params\" -> m.parameter.name.l,
+                   \"score\" -> maxScore,
+                   \"dangerousCalls\" -> dedupedCalls
                  )
-            }.l
+            }}.l
 
         ujson.Arr(results*)
         """
