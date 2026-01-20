@@ -3,6 +3,7 @@ from ..dsl.patterns import Or, Pattern
 from ..dsl.query import Query
 from . import csharp, java, javascript, python
 from .common import Sanitizer
+from .discovery import DiscoveryHeuristic
 
 
 def SqlSink(coverage: str = "precision") -> Pattern:  # noqa: N802
@@ -203,3 +204,18 @@ def get_scan_rules(language: str | None = None, coverage: str = "precision") -> 
             impact="Unauthorized access to critical functionality.",
         ),
     ]
+
+
+def get_discovery_heuristics(language: str | None = None) -> list[DiscoveryHeuristic]:
+    """
+    Returns discovery heuristics for the specified language.
+    """
+    if language == "python":
+        return python.get_discovery_heuristics()
+    if language == "javascript":
+        return javascript.get_discovery_heuristics()
+    if language == "java":
+        return java.get_discovery_heuristics()
+    if language == "csharp":
+        return csharp.get_discovery_heuristics()
+    return []

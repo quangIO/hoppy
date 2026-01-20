@@ -2,6 +2,7 @@ from ..core.rule import Confidence, ScanRule, Severity
 from ..dsl.patterns import Call, Literal, Method, Or, Parameter, Pattern, Return
 from ..dsl.query import Query
 from .common import DynamicArg
+from .discovery import DiscoveryHeuristic
 
 
 def WebSource(var_name: str = "$IN") -> Pattern:
@@ -410,3 +411,64 @@ def get_scan_rules(coverage: str = "precision") -> list[ScanRule]:
         )
 
     return rules
+
+
+def get_discovery_heuristics() -> list[DiscoveryHeuristic]:
+    """
+    Returns discovery heuristics for Java.
+    """
+    return [
+        DiscoveryHeuristic(
+            category="Command Execution",
+            patterns=[
+                ".*java\\.lang\\.Runtime\\.exec.*",
+                ".*java\\.lang\\.ProcessBuilder\\.(start|<init>).*",
+            ],
+            weight=10,
+            suspicious_params=["cmd", "command", "args", "shell", "script"],
+        ),
+        DiscoveryHeuristic(
+            category="SQL Injection",
+            patterns=[
+                ".*java\\.sql\\.Statement\\.execute.*",
+                ".*java\\.sql\\.Connection\\.prepare(Statement|Call).*",
+                ".*org\\.hibernate\\.Session\\.create(Query|SQLQuery|NativeQuery).*",
+                ".*javax\\.persistence\\.EntityManager\\.create(Query|NativeQuery).*",
+                ".*org\\.springframework\\.jdbc\\.core\\.JdbcTemplate.*",
+            ],
+            weight=9,
+            suspicious_params=["sql", "query", "table", "where"],
+        ),
+        DiscoveryHeuristic(
+            category="File System",
+            patterns=[
+                ".*java\\.io\\.File\\.(<init>).*",
+                ".*java\\.io\\.FileInputStream\\.(<init>).*",
+                ".*java\\.io\\.FileOutputStream\\.(<init>).*",
+                ".*java\\.nio\\.file\\.Files\\.(read|write|new|copy|move|delete|create).*",
+            ],
+            weight=7,
+            suspicious_params=["path", "filename", "filepath", "dest", "src"],
+        ),
+        DiscoveryHeuristic(
+            category="Network",
+            patterns=[
+                ".*java\\.net\\.URL\\.open(Stream|Connection).*",
+                ".*org\\.apache\\.http\\.client\\.HttpClient\\.execute.*",
+                ".*okhttp3\\.OkHttpClient\\.newCall.*",
+                ".*org\\.springframework\\.web\\.client\\.RestTemplate.*",
+            ],
+            weight=8,
+            suspicious_params=["url", "host", "uri", "endpoint"],
+        ),
+        DiscoveryHeuristic(
+            category="Code Injection",
+            patterns=[
+                ".*javax\\.script\\.ScriptEngine\\.eval.*",
+                ".*org\\.mvel2\\.MVEL\\.eval.*",
+                ".*org\\.springframework\\.expression\\.ExpressionParser\\.parseExpression.*",
+            ],
+            weight=10,
+            suspicious_params=["code", "data", "expr", "payload"],
+        ),
+    ]

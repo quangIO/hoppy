@@ -11,6 +11,7 @@ from ..dsl.patterns import (
 )
 from ..dsl.query import Query
 from .common import DynamicArg, Sanitizer
+from .discovery import DiscoveryHeuristic
 
 
 def WebSource(var_name: str = "$IN") -> Pattern:
@@ -401,5 +402,61 @@ def get_scan_rules(coverage: str = "precision") -> list[ScanRule]:
             confidence=Confidence.medium,
             root_cause="A dangerous operation is performed without being preceded by an authentication check.",
             impact="Unauthorized users may be able to perform dangerous actions.",
+        ),
+    ]
+
+
+def get_discovery_heuristics() -> list[DiscoveryHeuristic]:
+    """
+    Returns discovery heuristics for Python.
+    """
+    return [
+        DiscoveryHeuristic(
+            category="Command Execution",
+            patterns=[
+                ".*subprocess.*(run|call|check_call|check_output|Popen).*",
+                ".*os.*(system|popen|spawn|exec).*",
+            ],
+            weight=10,
+            suspicious_params=["cmd", "command", "args", "shell", "script"],
+        ),
+        DiscoveryHeuristic(
+            category="SQL Injection",
+            patterns=[
+                ".*(execute|raw|executescript).*",
+                ".*django\\.db\\.(models\\.query\\.QuerySet\\.raw|connection\\.cursor).*",
+            ],
+            weight=9,
+            suspicious_params=["sql", "query", "table", "where"],
+        ),
+        DiscoveryHeuristic(
+            category="File System",
+            patterns=[
+                ".*(open).*",
+                ".*os.*(open|listdir|remove|rmdir|mkdir|makedirs).*",
+                ".*shutil\\.(copy|move).*",
+            ],
+            weight=7,
+            suspicious_params=["path", "filename", "filepath", "dest", "src"],
+        ),
+        DiscoveryHeuristic(
+            category="Network",
+            patterns=[
+                ".*requests\\.(get|post|put|delete|patch|head|options|request).*",
+                ".*urllib\\.request\\.urlopen.*",
+                ".*aiohttp\\.ClientSession.*",
+            ],
+            weight=8,
+            suspicious_params=["url", "host", "uri", "endpoint"],
+        ),
+        DiscoveryHeuristic(
+            category="Code Injection",
+            patterns=[
+                ".*(exec|eval).*",
+                ".*ImageMath\\.eval.*",
+                ".*code\\.Interactive.*",
+            ],
+            weight=10,
+            suspicious_params=["code", "data", "expr", "payload"],
         ),
     ]

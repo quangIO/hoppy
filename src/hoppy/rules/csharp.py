@@ -1,7 +1,17 @@
 from ..core.rule import Confidence, ScanRule, Severity
-from ..dsl.patterns import Call, Field, Identifier, Method, Or, Parameter, Pattern, Var
+from ..dsl.patterns import (
+    Call,
+    Field,
+    Identifier,
+    Method,
+    Or,
+    Parameter,
+    Pattern,
+    Var,
+)
 from ..dsl.query import Query
 from .common import DynamicArg
+from .discovery import DiscoveryHeuristic
 
 
 def WebSource(var_name: str = "$IN") -> Pattern:
@@ -330,5 +340,63 @@ def get_scan_rules(coverage: str = "precision") -> list[ScanRule]:
             confidence=Confidence.medium,
             root_cause="Untrusted input is used to populate multiple fields of an object at once.",
             impact="Unauthorized modification of sensitive fields.",
+        ),
+    ]
+
+
+def get_discovery_heuristics() -> list[DiscoveryHeuristic]:
+    """
+    Returns discovery heuristics for C#.
+    """
+    return [
+        DiscoveryHeuristic(
+            category="Command Execution",
+            patterns=[
+                ".*System\\.Diagnostics\\.Process\\.Start.*",
+                ".*System\\.Management\\.Automation\\.PowerShell\\.Invoke.*",
+            ],
+            weight=10,
+            suspicious_params=["cmd", "command", "args", "shell", "script"],
+        ),
+        DiscoveryHeuristic(
+            category="SQL Injection",
+            patterns=[
+                ".*Microsoft\\.EntityFrameworkCore.*ExecuteSql.*",
+                ".*Microsoft\\.EntityFrameworkCore.*FromSql.*",
+                ".*System\\.Data\\.SqlClient\\.SqlCommand\\.Execute.*",
+                ".*Dapper\\.SqlMapper\\.Query.*",
+            ],
+            weight=9,
+            suspicious_params=["sql", "query", "table", "where"],
+        ),
+        DiscoveryHeuristic(
+            category="File System",
+            patterns=[
+                ".*System\\.IO\\.File\\.(Open|Read|Write|Delete|Copy|Move).*",
+                ".*System\\.IO\\.Directory\\.(CreateDirectory|Delete|GetFiles|GetDirectories).*",
+                ".*System\\.IO\\.FileInfo\\.(<init>).*",
+                ".*System\\.IO\\.DirectoryInfo\\.(<init>).*",
+            ],
+            weight=7,
+            suspicious_params=["path", "filename", "filepath", "dest", "src"],
+        ),
+        DiscoveryHeuristic(
+            category="Network",
+            patterns=[
+                ".*System\\.Net\\.Http\\.HttpClient\\.(Get|Post|Put|Delete|Send|Request).*Async.*",
+                ".*System\\.Net\\.WebRequest\\.Create.*",
+                ".*System\\.Net\\.WebClient\\.(Download|Upload).*Async.*",
+            ],
+            weight=8,
+            suspicious_params=["url", "host", "uri", "endpoint"],
+        ),
+        DiscoveryHeuristic(
+            category="Code Injection",
+            patterns=[
+                ".*Microsoft\\.CodeAnalysis\\.CSharp\\.Scripting\\.CSharpScript\\.Evaluate.*",
+                ".*System\\.Reflection\\.MethodInfo\\.Invoke.*",
+            ],
+            weight=10,
+            suspicious_params=["code", "data", "expr", "payload"],
         ),
     ]

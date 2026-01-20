@@ -11,6 +11,7 @@ from ..dsl.patterns import (
 )
 from ..dsl.query import Query
 from .common import DynamicArg, Sanitizer
+from .discovery import DiscoveryHeuristic
 
 
 def WebSource(var_name: str = "$IN") -> Pattern:
@@ -510,5 +511,53 @@ def get_scan_rules(coverage: str = "precision") -> list[ScanRule]:
             confidence=Confidence.medium,
             root_cause="A dangerous operation is reachable without an auth check.",
             impact="Unauthorized users may execute sensitive operations.",
+        ),
+    ]
+
+
+def get_discovery_heuristics() -> list[DiscoveryHeuristic]:
+    """
+    Returns discovery heuristics for JavaScript.
+    """
+    return [
+        DiscoveryHeuristic(
+            category="Command Execution",
+            patterns=[
+                ".*child_process.*[:\\.](exec|execSync|spawn|spawnSync|execFile|execFileSync).*"
+            ],
+            weight=10,
+            suspicious_params=["cmd", "command", "args", "shell", "script"],
+        ),
+        DiscoveryHeuristic(
+            category="SQL Injection",
+            patterns=[
+                ".*(sequelize.*[:\\.]query|knex.*[:\\.](raw|whereRaw)|pg.*[:\\.]query|mysql.*[:\\.]query|mariadb.*[:\\.]query|sqlite3.*[:\\.](all|get|run)).*"
+            ],
+            weight=9,
+            suspicious_params=["sql", "query", "table", "where"],
+        ),
+        DiscoveryHeuristic(
+            category="File System",
+            patterns=[
+                ".*fs.*[:\\.](readFile|readFileSync|writeFile|writeFileSync|createReadStream|createWriteStream|unlink|readdir|readdirSync|mkdir|mkdirSync|rmdir|rmdirSync|open|openSync).*"
+            ],
+            weight=7,
+            suspicious_params=["path", "filename", "filepath", "dest", "src"],
+        ),
+        DiscoveryHeuristic(
+            category="Network",
+            patterns=[
+                ".*(axios($|[:\\.](get|post|put|delete|head|options|request))|fetch|node-fetch|http.*[:\\.](get|request)|https.*[:\\.](get|request)|request[:\\.].*|superagent[:\\.].*|got[:\\.].*).*"
+            ],
+            weight=8,
+            suspicious_params=["url", "host", "uri", "endpoint"],
+        ),
+        DiscoveryHeuristic(
+            category="Code Injection",
+            patterns=[
+                ".*(eval|Function|vm.*[:\\.]run(InNewContext|InContext|Script)).*"
+            ],
+            weight=10,
+            suspicious_params=["code", "data", "expr", "payload"],
         ),
     ]

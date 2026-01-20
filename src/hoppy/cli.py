@@ -329,12 +329,24 @@ def discover(
                 joern_parse_args=extra_args,
             )
 
-        result = analyzer.discover_wrappers()
+        from .rules import get_discovery_heuristics
+
+        heuristics = get_discovery_heuristics(language)
+        if not heuristics:
+            console.print(
+                f"[yellow]Warning:[/yellow] No discovery heuristics available for "
+                f"language '{language or 'unknown'}'. Using default empty list."
+            )
+
+        result = analyzer.discover_wrappers(heuristics)
         if not result:
             console.print(f"[red]Discovery failed: {result.failure()}[/red]")
             raise typer.Exit(1)
 
         wrappers = result.unwrap()
+        # Sort by score descending
+        wrappers.sort(key=lambda x: x.get("score", 0), reverse=True)
+
         console.print(f"\n[bold]Discovered {len(wrappers)} potential custom sinks:[/bold]\n")
 
         for w in wrappers:
@@ -353,13 +365,20 @@ def discover(
 
             param_display = ", ".join(param_strs)
             loc = f"{os.path.basename(w['file'])}:{w['line']}"
+            score = w.get("score", 0)
 
-            console.print(f"[bold cyan]{w['name']}[/bold cyan] ({param_display}) [dim]{loc}[/dim]")
+            console.print(
+                f"[bold cyan]{w['name']}[/bold cyan] ({param_display}) "
+                f"[dim]{loc}[/dim] [bold yellow](score: {score})[/bold yellow]"
+            )
 
             for call in w["dangerousCalls"]:
-                console.print(f"  ↳ [yellow]{call['category']}[/yellow]: calls `{call['name']}`")
+                c_score = call.get("score", 0)
+                console.print(
+                    f"  ↳ [yellow]{call['category']}[/yellow]: calls `{call['name']}` "
+                    f"[dim](score: {c_score})[/dim]"
+                )
             console.print("")
-
 
 @app.command(name="list-methods")
 def list_methods_cmd(

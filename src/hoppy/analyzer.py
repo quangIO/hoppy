@@ -419,8 +419,9 @@ class Analyzer:
 
         def getHeuristic(name: String, fullName: String) = {{
              heuristics.find {{ h =>
-                h.obj(\"patterns\").arr.map(_.str)
-                 .exists(p => fullName.matches(p) || name.matches(p))
+                h.obj(\"patterns\").arr.map(_.str).exists {{ p =>
+                    fullName.matches(p) || name.matches(p)
+                }}
              }}
         }}
 
@@ -428,10 +429,11 @@ class Analyzer:
             .filter(m => !m.isExternal && !m.name.startsWith("<operator>"))
             .where(_.file.name(".*"))
             .map {{ m =>
-                val dangerousCalls = m.call.filter(c =>
-                    allPatterns.exists(p => c.methodFullName.matches(p) || c.name.matches(p))
-                ).l
-
+                val dangerousCalls = m.call.filter {{ c =>
+                    allPatterns.exists {{ p =>
+                        c.methodFullName.matches(p) || c.name.matches(p)
+                    }}
+                }}.l
                 val flowConfirmed = dangerousCalls.flatMap {{ c =>
                     if (c.name.nonEmpty &&
                         c.methodFullName.nonEmpty &&
@@ -442,12 +444,14 @@ class Analyzer:
                          if (taintingParams.nonEmpty) {{
                              val h = getHeuristic(c.name, c.methodFullName).get
                              val baseWeight = h.obj(\"weight\").num.toInt
-                             val suspParams = h.obj(\"suspicious_params\").arr.map(_.str).toSet
+                             val suspParams = h.obj(\"suspicious_params\")
+                                .arr.map(_.str).toSet
 
-                             // Calculate score boost for suspicious parameter names
-                             val boost = if (taintingParams.exists(
+                             // Score boost for suspicious parameter names
+                             val isSuspicious = taintingParams.exists(
                                 p => suspParams.contains(p.toLowerCase)
-                             )) 5 else 0
+                             )
+                             val boost = if (isSuspicious) 5 else 0
                              val score = baseWeight + boost
 
                              Some(ujson.Obj(
@@ -465,19 +469,20 @@ class Analyzer:
                         None
                     }}
                 }}.l
-
                 (m, flowConfirmed)
             }}
             .filter(_._2.nonEmpty)
             .map {{ case (m, dangerousCalls) =>
-                 // Deduplicate calls by (category, fullName) while keeping max score
-                 // and union of tainting parameters
-                 val dedupedCalls = dangerousCalls.groupBy(c => 
+                 // Deduplicate calls by (category, fullName)
+                 val dedupedCalls = dangerousCalls.groupBy(c =>
                     (c.obj(\"category\").str, c.obj(\"fullName\").str)
                  ).map {{ case ((category, fullName), instances) =>
                     val name = instances.head.obj(\"name\").str
-                    val maxScore = instances.map(_.obj(\"score\").num.toInt).max
-                    val allTaintedBy = instances.flatMap(_.obj(\"taintedBy\").arr.map(_.str)).distinct.l
+                    val scores = instances.map(_.obj(\"score\").num.toInt)
+                    val maxScore = scores.max
+                    val allTaintedBy = instances
+                        .flatMap(_.obj(\"taintedBy\").arr.map(_.str))
+                        .distinct.l
                     ujson.Obj(
                       \"name\" -> name,
                       \"fullName\" -> fullName,
@@ -486,10 +491,24 @@ class Analyzer:
                       \"taintedBy\" -> allTaintedBy
                     )
                  }}.l
-
                  val maxScore = dedupedCalls.map(_.obj(\"score\").num.toInt).max
+
+                 // Recursive parent method name resolution
+                 def getMethodPath(
+                    curr: io.shiftleft.codepropertygraph.generated.nodes.Method
+                 ): String = {{
+                    val p = curr.astIn.isMethod.headOption
+                    p match {{
+                        case Some(parent) if parent.name != \":program\" =>
+                            s\"${{getMethodPath(parent)}}.${{curr.name}}\"
+                        case _ => curr.name
+                    }}
+                 }}
+
+                 val displayName = getMethodPath(m)
+
                  ujson.Obj(
-                   \"name\" -> m.name,
+                   \"name\" -> displayName,
                    \"fullName\" -> m.fullName,
                    \"file\" -> m.filename,
                    \"line\" -> m.lineNumber.getOrElse(-1),
@@ -498,7 +517,6 @@ class Analyzer:
                    \"dangerousCalls\" -> dedupedCalls
                  )
             }}.l
-
         ujson.Arr(results*)
         """
         return (
