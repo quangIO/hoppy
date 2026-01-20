@@ -384,6 +384,108 @@ class Analyzer:
             .map(self._group_api_summary)
         )
 
+    def discover_wrappers(self) -> Result[list[dict[str, Any]], Exception]:
+        """
+        Heuristic scan to discover internal methods that wrap dangerous external APIs.
+        Returns a list of wrappers with details about the dangerous calls they make.
+        """
+        scala = r"""
+        import io.joern.dataflowengineoss.language._
+        import io.shiftleft.semanticcpg.language._
+
+        // Use List of tuples to preserve order for category matching
+        val sinks = List(
+          "Command Execution" -> List(
+            ".*subprocess.*(run|call|check_call|check_output|Popen).*",
+            ".*os.*(system|popen|spawn|exec).*"
+          ),
+          "SQL Injection" -> List(
+            ".*(execute|raw|executescript).*",
+            ".*django\\.db\\.(models\\.query\\.QuerySet\\.raw|connection\\.cursor).*"
+          ),
+          "File System" -> List(
+            ".*(open).*",
+            ".*os.*(open|listdir|remove|rmdir|mkdir|makedirs).*",
+            ".*shutil\\.(copy|move).*"
+          ),
+          "Network" -> List(
+            ".*requests\\.(get|post|put|delete|patch|head|options|request).*",
+            ".*urllib\\.request\\.urlopen.*",
+            ".*aiohttp\\.ClientSession.*"
+          ),
+          "Code Injection" -> List(
+            ".*(exec|eval).*",
+            ".*ImageMath\\.eval.*",
+            ".*code\\.Interactive.*"
+          )
+        )
+
+        // Flatten patterns for initial filtering
+        val allPatterns = sinks.flatMap(_._2)
+
+        def getCategory(name: String, fullName: String): String = {
+             sinks.find { case (_, patterns) =>
+                patterns.exists(p => fullName.matches(p) || name.matches(p))
+             }.map(_._1).getOrElse("Unknown")
+        }
+
+        val results = cpg.method
+            .filter(m => !m.isExternal && !m.name.startsWith("<operator>"))
+            .where(_.file.name(".*")) // Ensure we have a file
+            .map { m =>
+                // Find potential dangerous calls in this method
+                val dangerousCalls = m.call.filter(c =>
+                    allPatterns.exists(p => c.methodFullName.matches(p) || c.name.matches(p))
+                ).l
+
+                // Check for flow from parameters to these calls
+                val flowConfirmed = dangerousCalls.flatMap { c =>
+                    // Check if argument is tainted by parameter
+                    // Also filter out calls with empty names/fullnames to avoid noise
+                    if (c.name.nonEmpty &&
+                        c.methodFullName.nonEmpty &&
+                        c.methodFullName != "<unknown>") {
+                         val taintingParams = m.parameter
+                            .filter(p => c.argument.reachableBy(p).nonEmpty)
+                            .name.l
+                         if (taintingParams.nonEmpty) {
+                             Some(ujson.Obj(
+                                "name" -> c.name,
+                                "fullName" -> c.methodFullName,
+                                "category" -> getCategory(c.name, c.methodFullName),
+                                "line" -> c.lineNumber.getOrElse(-1),
+                                "taintedBy" -> taintingParams
+                             ))
+                         } else {
+                             None
+                         }
+                    } else {
+                        None
+                    }
+                }.l
+
+                (m, flowConfirmed)
+            }
+            .filter(_._2.nonEmpty)
+            .map { case (m, dangerousCalls) =>
+                 ujson.Obj(
+                   "name" -> m.name,
+                   "fullName" -> m.fullName,
+                   "file" -> m.filename,
+                   "line" -> m.lineNumber.getOrElse(-1),
+                   "params" -> m.parameter.name.l,
+                   "dangerousCalls" -> dangerousCalls
+                 )
+            }.l
+
+        ujson.Arr(results*)
+        """
+        return (
+            self.session.run_scala(scala)
+            .bind(self.session._parse_json_result)
+            .bind(self._ensure_list)
+        )
+
     def _group_api_summary(self, fullnames: list[str]) -> dict[str, list[str]]:
         summary: dict[str, list[str]] = {}
         for fn in fullnames:

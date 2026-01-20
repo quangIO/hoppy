@@ -287,6 +287,80 @@ def slice(
         reporter.report(slice_obj)
 
 
+@app.command()
+def discover(
+    path: str = typer.Argument(".", help="Path to the source code to scan."),
+    language: str | None = typer.Option(
+        None,
+        "--lang",
+        "-l",
+        help="Language to scan (java, csharp, python).",
+    ),
+    joern_parse_args: str | None = typer.Option(
+        None,
+        "--joern-parse-args",
+        help="Extra frontend args passed to joern-parse.",
+    ),
+):
+    """
+    Discover potential custom sinks (wrappers around dangerous APIs).
+    """
+    abs_path = os.path.abspath(path)
+    if not os.path.exists(abs_path):
+        console.print(f"[bold danger]Error:[/bold danger] Path '{abs_path}' does not exist.")
+        raise typer.Exit(1)
+
+    with Analyzer() as analyzer:
+        console.print("")
+        with console.status(
+            f"[bold info]Analyzing Codebase at {abs_path}...[/bold info]",
+            spinner="dots",
+        ):
+            lang_map = {
+                "python": "PYTHONSRC",
+                "java": "JAVASRC",
+                "csharp": "CSHARP",
+                "javascript": "JSSRC",
+            }
+            extra_args = shlex.split(joern_parse_args) if joern_parse_args else None
+            analyzer.load_code(
+                abs_path,
+                language=lang_map.get(language.lower()) if language else None,
+                joern_parse_args=extra_args,
+            )
+
+        result = analyzer.discover_wrappers()
+        if not result:
+            console.print(f"[red]Discovery failed: {result.failure()}[/red]")
+            raise typer.Exit(1)
+
+        wrappers = result.unwrap()
+        console.print(f"\n[bold]Discovered {len(wrappers)} potential custom sinks:[/bold]\n")
+
+        for w in wrappers:
+            # Collect all tainted params
+            all_tainted = set()
+            for call in w["dangerousCalls"]:
+                all_tainted.update(call.get("taintedBy", []))
+
+            # Format params
+            param_strs = []
+            for p in w["params"]:
+                if p in all_tainted:
+                    param_strs.append(f"[red]{p}[/red]")
+                else:
+                    param_strs.append(p)
+
+            param_display = ", ".join(param_strs)
+            loc = f"{os.path.basename(w['file'])}:{w['line']}"
+
+            console.print(f"[bold cyan]{w['name']}[/bold cyan] ({param_display}) [dim]{loc}[/dim]")
+
+            for call in w["dangerousCalls"]:
+                console.print(f"  ↳ [yellow]{call['category']}[/yellow]: calls `{call['name']}`")
+            console.print("")
+
+
 @app.command(name="list-methods")
 def list_methods_cmd(
     path: str = typer.Argument(".", help="Path to the source code to analyze."),
