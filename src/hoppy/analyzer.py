@@ -1,3 +1,4 @@
+import json
 from typing import Any, TypeVar, cast
 
 from returns.result import Failure, Result, safe
@@ -157,9 +158,10 @@ class Analyzer:
 
     def list_calls(self, pattern: str = ".*") -> Result[list[str], Exception]:
         """List all unique function calls matching a regex pattern (name or methodFullName)."""
+        esc_pattern = json.dumps(pattern)[1:-1]
         scala = (
-            f'ujson.Arr(cpg.call.filter(c => c.name.matches("{pattern}") || '
-            f'c.methodFullName.matches("{pattern}")).methodFullName.distinct.l'
+            f'ujson.Arr(cpg.call.filter(c => c.name.matches("{esc_pattern}") || '
+            f'c.methodFullName.matches("{esc_pattern}")).methodFullName.distinct.l'
             f".map(v => v: ujson.Value)*)"
         )
         return (
@@ -170,9 +172,10 @@ class Analyzer:
 
     def list_methods(self, pattern: str = ".*") -> Result[list[str], Exception]:
         """List all method definitions matching a regex pattern (name or fullName)."""
+        esc_pattern = json.dumps(pattern)[1:-1]
         scala = (
-            f'ujson.Arr(cpg.method.filter(m => m.name.matches("{pattern}") || '
-            f'm.fullName.matches("{pattern}")).fullName.distinct.l'
+            f'ujson.Arr(cpg.method.filter(m => m.name.matches("{esc_pattern}") || '
+            f'm.fullName.matches("{esc_pattern}")).fullName.distinct.l'
             f".map(v => v: ujson.Value)*)"
         )
         return (
@@ -189,12 +192,73 @@ class Analyzer:
             case _:
                 return []
 
+    def get_method_details(self, full_name: str) -> Result[dict[str, Any], Exception]:
+        """Get detailed information about a method definition."""
+        esc_name = json.dumps(full_name)[1:-1]
+        scala = f"""
+        cpg.method.fullName("{esc_name}").map {{ m =>
+            val params = m.parameter.map(p => ujson.Obj(
+                "name" -> ujson.Str(p.name),
+                "type" -> ujson.Str(p.typeFullName),
+                "index" -> ujson.Num(p.order)
+            )).l
+
+            val callsOut = m.call.filter(c => !c.name.startsWith("<operator>"))
+                .map(c => ujson.Obj(
+                    "name" -> ujson.Str(c.name),
+                    "fullName" -> ujson.Str(c.methodFullName),
+                    "code" -> ujson.Str(c.code)
+                )).distinct.l
+
+            val callers = m.callIn.method.map(x => ujson.Str(x.fullName.toString)).distinct.l
+
+            ujson.Obj(
+                "fullName" -> ujson.Str(m.fullName),
+                "name" -> ujson.Str(m.name),
+                "file" -> ujson.Str(m.filename),
+                "line" -> m.lineNumber.map(ujson.Num(_)).getOrElse(ujson.Null),
+                "params" -> params,
+                "callsOut" -> callsOut,
+                "callers" -> callers,
+                "code" -> ujson.Str(getCode(m))
+            )
+        }}.headOption.getOrElse(ujson.Null)
+        """
+        return (
+            self.raw_scala(scala, prelude=self.session.prelude)
+            .bind(self.session._parse_json_result)
+            .map(lambda r: cast(dict[str, Any], r))
+        )
+
+    def find_calls(self, pattern: str = ".*") -> Result[list[dict[str, Any]], Exception]:
+        """Find rich information about call sites matching a pattern."""
+        esc_pattern = json.dumps(pattern)[1:-1]
+        scala = f"""
+        ujson.Arr(cpg.call.filter(c => c.name.matches("{esc_pattern}") ||
+          c.methodFullName.matches("{esc_pattern}"))
+          .map(c => ujson.Obj(
+            "name" -> ujson.Str(c.name),
+            "fullName" -> ujson.Str(c.methodFullName),
+            "caller" -> ujson.Str(
+              c.method.map(_.fullName).headOption.map(_.toString).getOrElse("<unknown>")
+            ),
+            "code" -> ujson.Str(c.code),
+            "file" -> ujson.Str(c.file.name.headOption.map(_.toString).getOrElse("")),
+            "line" -> c.lineNumber.map(ujson.Num(_)).getOrElse(ujson.Null)
+          )).l.map(v => v: ujson.Value)*)
+        """
+        return (
+            self.session.run_scala(scala)
+            .bind(self.session._parse_json_result)
+            .bind(self._ensure_list)
+        )
+
     def data_flow_slice(self, sink_pattern: str, depth: int = 40) -> Result[Slice, Exception]:
         """
         Performs a data-flow slice starting from nodes matching the sink_pattern.
         """
         # Escape for Scala string literal
-        esc_sink = sink_pattern.replace("\\", "\\\\").replace('"', '\\"')
+        esc_sink = json.dumps(sink_pattern)[1:-1]
 
         scala = f'''
         import io.joern.dataflowengineoss.slicing._

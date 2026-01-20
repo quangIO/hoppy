@@ -1,4 +1,4 @@
-from ..core.rule import ScanRule, Severity
+from ..core.rule import Confidence, ScanRule, Severity
 from ..dsl.patterns import Call, Field, Identifier, Method, Or, Parameter, Pattern, Var
 from ..dsl.query import Query
 from .common import DynamicArg
@@ -327,6 +327,7 @@ def get_scan_rules(coverage: str = "precision") -> list[ScanRule]:
             name="Unsafe Population (Mass Assignment)",
             query=Query.source(WebSource("$IN")).flows_to(UnsafePopulationSink()),
             severity=Severity.medium,
+            confidence=Confidence.medium,
             root_cause="Untrusted input is used to populate multiple fields of an object at once.",
             impact="Unauthorized modification of sensitive fields.",
         ),

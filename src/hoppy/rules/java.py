@@ -1,4 +1,4 @@
-from ..core.rule import ScanRule, Severity
+from ..core.rule import Confidence, ScanRule, Severity
 from ..dsl.patterns import Call, Literal, Method, Or, Parameter, Pattern, Return
 from ..dsl.query import Query
 from .common import DynamicArg
@@ -322,6 +322,7 @@ def get_scan_rules(coverage: str = "precision") -> list[ScanRule]:
             name="Stored XSS (Flow to Storage)",
             query=Query.source(WebSource("$IN")).flows_to(StorageSink()),
             severity=Severity.medium,
+            confidence=Confidence.medium,
             root_cause="User input is saved to the database and later retrieved and rendered without escaping.",
             impact="Persistent Cross-Site Scripting affecting all users who view the malicious content.",
         ),
@@ -329,6 +330,7 @@ def get_scan_rules(coverage: str = "precision") -> list[ScanRule]:
             name="Stored XSS (Flow to Output)",
             query=Query.source(DbSource()).flows_to(ControllerReturn()),
             severity=Severity.medium,
+            confidence=Confidence.medium,
             root_cause="Data retrieved from the database is rendered in a controller response without escaping.",
             impact="Persistent Cross-Site Scripting when malicious data has been previously stored.",
         ),

@@ -5,7 +5,7 @@ from rich.tree import Tree
 
 from . import rules, slicing_rules
 from .analyzer import Analyzer
-from .core.rule import ScanRule, Severity
+from .core.rule import Confidence, ScanRule, Severity
 from .dsl.patterns import Return, _esc
 from .dsl.query import Query
 from .reporting import Reporter
@@ -227,12 +227,15 @@ def run_scans(
     reporters: list[Reporter],
     status_callback=None,
     severity_min: Severity | None = None,
+    confidence_min: Confidence | None = None,
 ):
     """
     Orchestrates the execution of multiple scan rules and reports results.
     """
     for rule in scans:
         if severity_min and rule.severity < severity_min:
+            continue
+        if confidence_min and rule.confidence < confidence_min:
             continue
         if status_callback:
             status_callback(f"Scanning for {rule.name}...")

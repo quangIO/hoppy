@@ -20,11 +20,26 @@ class Severity(IntEnum):
             raise ValueError(f"Invalid severity '{value}'") from exc
 
 
+class Confidence(IntEnum):
+    low = 1
+    medium = 2
+    high = 3
+
+    @classmethod
+    def from_value(cls, value: str) -> "Confidence":
+        normalized = value.lower().strip()
+        try:
+            return cls[normalized]
+        except KeyError as exc:
+            raise ValueError(f"Invalid confidence '{value}'") from exc
+
+
 @dataclass(frozen=True)
 class ScanRule:
     name: str
     query: Query
     severity: Severity = Severity.high
+    confidence: Confidence = Confidence.high
     description: str | None = None
     root_cause: str | None = None
     impact: str | None = None
@@ -36,6 +51,11 @@ class ScanRule:
         elif not isinstance(self.severity, Severity):
             raise ValueError(f"Invalid severity type: {type(self.severity)}")
 
+        if isinstance(self.confidence, str):
+            object.__setattr__(self, "confidence", Confidence.from_value(self.confidence))
+        elif not isinstance(self.confidence, Confidence):
+            raise ValueError(f"Invalid confidence type: {type(self.confidence)}")
+
         if self.rule_id is None:
             # Generate a simple rule ID if not provided
             object.__setattr__(self, "rule_id", self.name.replace(" ", "-").lower())
@@ -43,3 +63,7 @@ class ScanRule:
     @property
     def severity_name(self) -> str:
         return self.severity.name
+
+    @property
+    def confidence_name(self) -> str:
+        return self.confidence.name

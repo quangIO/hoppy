@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import TypedDict
@@ -19,7 +20,7 @@ def _esc(s: str | None) -> str:
     """Escapes a string for use in a Scala string literal."""
     if s is None:
         return ""
-    return s.replace("\\", "\\\\").replace('"', '\\"')
+    return json.dumps(s)[1:-1]
 
 
 @dataclass
@@ -169,16 +170,13 @@ class Literal(Pattern):
                 return []
 
     def _escape_scala(self, s: LiteralValue) -> str:
-        match s:
-            case str(_):
-                # Joern stores string literals with quotes in their .code property
-                # We need to generate Scala code that represents the string "s"
-                # This works for both process and server modes
-                escaped = s.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
-                return '"\\"' + escaped + '\\""'
-            case _:
-                # For non-strings (like numbers), we still need to pass a string to .code()
-                return f'"{s}"'
+        if isinstance(s, str):
+            # Joern stores string literals with quotes in their .code property
+            # We need to generate Scala code that represents the string "s"
+            # This works for both process and server modes
+            return json.dumps(json.dumps(s))
+        # For non-strings (like numbers), we still need to pass a string to .code()
+        return json.dumps(str(s))
 
     def _string_checks(self, node_var: str) -> str:
         escaped = _esc(str(self.value))

@@ -1,4 +1,4 @@
-from ..core.rule import ScanRule, Severity
+from ..core.rule import Confidence, ScanRule, Severity
 from ..dsl.patterns import (
     Call,
     Identifier,
@@ -398,6 +398,7 @@ def get_scan_rules(coverage: str = "precision") -> list[ScanRule]:
                 .inside(~Method(annotation=auth_annotation))
             ),
             severity=Severity.high,
+            confidence=Confidence.medium,
             root_cause="A dangerous operation is performed without being preceded by an authentication check.",
             impact="Unauthorized users may be able to perform dangerous actions.",
         ),

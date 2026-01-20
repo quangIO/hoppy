@@ -7,7 +7,7 @@ from rich.rule import Rule
 
 from . import installer, rules
 from .analyzer import Analyzer
-from .core.rule import Severity
+from .core.rule import Confidence, Severity
 from .orchestrator import display_endpoints, get_endpoints, run_scans
 from .reporting import ConsoleReporter, SliceReporter, custom_theme
 from .slicing_rules import format_rules, get_slicing_rule, get_slicing_rules
@@ -47,6 +47,11 @@ def scan(
         "--min-severity",
         help="Minimum severity to report (info, low, medium, high, critical).",
     ),
+    confidence_min: str | None = typer.Option(
+        None,
+        "--min-confidence",
+        help="Minimum confidence to report (low, medium, high).",
+    ),
     joern_parse_args: str | None = typer.Option(
         None,
         "--joern-parse-args",
@@ -64,6 +69,11 @@ def scan(
         10,
         "--depth",
         help="Max depth for call graph traversal during attack surface mapping.",
+    ),
+    max_findings: int = typer.Option(
+        3,
+        "--max-findings",
+        help="Maximum number of findings to report per rule per file.",
     ),
 ):
     """
@@ -110,7 +120,9 @@ def scan(
 
         scans = rules.get_scan_rules(language, coverage=coverage)
 
-        reporters = [ConsoleReporter(console=console, base_path=abs_path)]
+        reporters = [
+            ConsoleReporter(console=console, base_path=abs_path, max_findings=max_findings)
+        ]
 
         if output_sarif:
             from .reporting import SarifReporter
@@ -118,6 +130,7 @@ def scan(
             reporters.append(SarifReporter(output_sarif, base_path=abs_path))
 
         min_sev = Severity.from_value(severity_min) if severity_min else None
+        min_conf = Confidence.from_value(confidence_min) if confidence_min else None
 
         # Use a mutable container to store the status context
         status_context = [None]
@@ -136,6 +149,7 @@ def scan(
                 reporters,
                 status_callback=update_status,
                 severity_min=min_sev,
+                confidence_min=min_conf,
             )
 
         console.print("\n", Rule(style="cyan"), "\n")
@@ -271,6 +285,227 @@ def slice(
             show_paths=show_paths,
         )
         reporter.report(slice_obj)
+
+
+@app.command(name="list-methods")
+def list_methods_cmd(
+    path: str = typer.Argument(".", help="Path to the source code to analyze."),
+    pattern: str = typer.Option(".*", "--pattern", "-p", help="Regex pattern for method names."),
+    calls: bool = typer.Option(
+        False, "--calls", "-c", help="List called methods instead of definitions."
+    ),
+    external: bool = typer.Option(
+        False, "--external", "-e", help="List only external/library calls (API summary)."
+    ),
+    language: str | None = typer.Option(
+        None, "--lang", "-l", help="Language filter (java, csharp, python, javascript)."
+    ),
+    joern_parse_args: str | None = typer.Option(
+        None,
+        "--joern-parse-args",
+        help="Extra frontend args passed to joern-parse.",
+    ),
+):
+    """
+    Lists methods (definitions or calls) in the codebase.
+    Useful for discovering dangerous sinks.
+    """
+    abs_path = os.path.abspath(path)
+    if not os.path.exists(abs_path):
+        console.print(f"[bold danger]Error:[/bold danger] Path '{abs_path}' does not exist.")
+        raise typer.Exit(1)
+
+    with Analyzer() as analyzer:
+        console.print("")
+        with console.status(
+            f"[bold info]Analyzing Codebase at {abs_path}...[/bold info]",
+            spinner="dots",
+        ):
+            lang_map = {
+                "python": "PYTHONSRC",
+                "java": "JAVASRC",
+                "csharp": "CSHARP",
+                "javascript": "JSSRC",
+            }
+            extra_args = shlex.split(joern_parse_args) if joern_parse_args else None
+            analyzer.load_code(
+                abs_path,
+                language=lang_map.get(language.lower()) if language else None,
+                joern_parse_args=extra_args,
+            )
+
+        if external:
+            result = analyzer.get_api_summary()
+            if not result:
+                console.print(f"[red]Failed to get API summary: {result.failure()}[/red]")
+                raise typer.Exit(1)
+
+            summary = result.unwrap()
+            console.print("\n[bold]External API Calls (grouped by module):[/bold]\n")
+            import re
+
+            pat = re.compile(pattern, re.IGNORECASE)
+
+            for module, methods in sorted(summary.items()):
+                filtered = [m for m in methods if pat.search(m)]
+                if filtered:
+                    console.print(f"[bold cyan]{module}[/bold cyan]")
+                    for m in sorted(filtered):
+                        console.print(f"  {m}")
+            return
+
+        if calls:
+            result = analyzer.list_calls(pattern)
+            title = "Called Methods"
+        else:
+            result = analyzer.list_methods(pattern)
+            title = "Method Definitions"
+
+        if not result:
+            console.print(f"[red]Failed to list methods: {result.failure()}[/red]")
+            raise typer.Exit(1)
+
+        methods = result.unwrap()
+        console.print(f"\n[bold]{title} matching '{pattern}':[/bold]\n")
+        for m in sorted(methods):
+            console.print(f"  {m}")
+
+
+@app.command(name="method-details")
+def method_details_cmd(
+    path: str = typer.Argument(".", help="Path to the source code."),
+    name: str = typer.Option(..., "--name", "-n", help="Full name of the method to inspect."),
+    language: str | None = typer.Option(None, "--lang", "-l", help="Language filter."),
+):
+    """
+    Shows detailed information about a specific method.
+    """
+    with Analyzer() as analyzer:
+        lang_map = {
+            "python": "PYTHONSRC",
+            "java": "JAVASRC",
+            "csharp": "CSHARP",
+            "javascript": "JSSRC",
+        }
+        analyzer.load_code(
+            os.path.abspath(path),
+            language=lang_map.get(language.lower()) if language else None,
+        )
+
+        result = analyzer.get_method_details(name)
+        if not result or result.unwrap() is None:
+            console.print(f"[red]Method '{name}' not found.[/red]")
+            return
+
+        details = result.unwrap()
+        console.print(f"\n[bold cyan]Method:[/bold cyan] [bold]{details['fullName']}[/bold]")
+        console.print(f"[bold info]File:[/bold info] {details['file']}:{details['line']}")
+
+        if details.get("params"):
+            console.print("\n[bold]Parameters:[/bold]")
+            for p in details["params"]:
+                console.print(f"  - {p['name']} ({p['type']})")
+
+        if details.get("callsOut"):
+            console.print("\n[bold]Calls Made:[/bold]")
+            # Group by fullName to avoid noise
+            seen_calls = {}
+            for c in details["callsOut"]:
+                seen_calls.setdefault(c["fullName"], []).append(c["code"])
+
+            for fn, codes in sorted(seen_calls.items()):
+                console.print(f"  - [bold]{fn}[/bold]")
+                for code in sorted(list(set(codes)))[:3]:
+                    console.print(f"    [dim]{code}[/dim]")
+
+        if details.get("callers"):
+            console.print("\n[bold]Called By:[/bold]")
+            for c in sorted(details["callers"]):
+                console.print(f"  - {c}")
+
+        if details.get("code"):
+            console.print("\n[bold]Source Code:[/bold]")
+            from rich.syntax import Syntax
+
+            syntax = Syntax(
+                details["code"], language or "python", theme="monokai", line_numbers=True
+            )
+            console.print(syntax)
+
+
+@app.command(name="find-calls")
+def find_calls_cmd(
+    path: str = typer.Argument(".", help="Path to the source code."),
+    pattern: str = typer.Option(
+        ".*", "--pattern", "-p", help="Regex pattern for called method names."
+    ),
+    language: str | None = typer.Option(None, "--lang", "-l", help="Language filter."),
+):
+    """
+    Finds rich information about call sites matching a pattern.
+    """
+    with Analyzer() as analyzer:
+        lang_map = {
+            "python": "PYTHONSRC",
+            "java": "JAVASRC",
+            "csharp": "CSHARP",
+            "javascript": "JSSRC",
+        }
+        analyzer.load_code(
+            os.path.abspath(path),
+            language=lang_map.get(language.lower()) if language else None,
+        )
+
+        result = analyzer.find_calls(pattern)
+        if not result:
+            console.print(f"[red]Failed to find calls: {result.failure()}[/red]")
+            return
+
+        calls = result.unwrap()
+        console.print(f"\n[bold]Call sites matching '{pattern}':[/bold]\n")
+
+        from rich.table import Table
+
+        table = Table(show_header=True, header_style="bold magenta")
+        table.add_column("Location", style="dim")
+        table.add_column("Caller", style="cyan")
+        table.add_column("Code", style="green")
+
+        for c in sorted(calls, key=lambda x: (x["file"], x["line"])):
+            loc = f"{os.path.basename(c['file'])}:{c['line']}"
+            table.add_row(loc, c["caller"], c["code"])
+
+        console.print(table)
+
+
+@app.command(name="query")
+def query_cmd(
+    scala: str = typer.Argument(..., help="Raw Scala query to execute."),
+    path: str = typer.Option(".", help="Path to the source code."),
+    language: str | None = typer.Option(None, "--lang", "-l", help="Language filter."),
+):
+    """
+    Executes a raw Scala query against the CPG.
+    """
+    with Analyzer() as analyzer:
+        lang_map = {
+            "python": "PYTHONSRC",
+            "java": "JAVASRC",
+            "csharp": "CSHARP",
+            "javascript": "JSSRC",
+        }
+        analyzer.load_code(
+            os.path.abspath(path),
+            language=lang_map.get(language.lower()) if language else None,
+        )
+
+        result = analyzer.raw_scala(scala, prelude=analyzer.session.prelude)
+        if not result:
+            console.print(f"[red]Query failed: {result.failure()}[/red]")
+            return
+
+        console.print("\n[bold]Query Result:[/bold]\n")
+        console.print(result.unwrap())
 
 
 def main() -> None:

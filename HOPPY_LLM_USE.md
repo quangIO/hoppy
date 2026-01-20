@@ -715,6 +715,32 @@ q = Query.source(
 )
 ```
 
+## Discovery
+
+Before writing complex queries, you should explore the codebase to find interesting methods and potential sinks.
+
+```python
+from hoppy import Analyzer
+
+with Analyzer() as analyzer:
+    analyzer.load_code("./path/to/code")
+
+    # List all method definitions matching a pattern
+    methods = analyzer.list_methods(".*login.*").unwrap()
+    for m in methods:
+        print(f"Found method: {m}")
+
+    # List all unique function calls (to find sinks)
+    calls = analyzer.list_calls(".*exec.*").unwrap()
+    for c in calls:
+        print(f"Found call: {c}")
+
+    # Get a summary of external API calls (grouped by module)
+    api_summary = analyzer.get_api_summary().unwrap()
+    for module, methods in api_summary.items():
+        print(f"Module {module} calls: {methods}")
+```
+
 ## CLI Quick Reference
 
 ```bash
@@ -729,6 +755,10 @@ hoppy scan ./src --min-severity high
 
 # Only map attack surface (no deep scans)
 hoppy scan ./src --surface-only
+
+# List methods and calls for discovery
+hoppy list-methods ./src --calls --pattern "execute"
+hoppy list-methods ./src --external
 
 # Program slicing from custom sink
 hoppy slice ./src --sink "execute.*query"

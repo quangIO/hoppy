@@ -111,6 +111,24 @@ hoppy slice ./src --sink "execute.*query"
 hoppy slice ./src --sink "eval" --depth 20 --max-sinks 10
 ```
 
+### `hoppy list-methods` - Discovery
+
+Lists methods and calls to discover dangerous sinks:
+
+```bash
+# List all method definitions
+hoppy list-methods ./src
+
+# List all called methods
+hoppy list-methods ./src --calls
+
+# List only external/library calls (API summary)
+hoppy list-methods ./src --external
+
+# Filter by regex
+hoppy list-methods ./src --calls --pattern "execute"
+```
+
 ## Python API
 
 The real power is using hoppy as a library to write custom queries:

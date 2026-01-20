@@ -50,11 +50,38 @@ SEVERITY_STYLE = {
     "critical": "bold white on red",
 }
 
+CONFIDENCE_STYLE = {
+    "low": "dim",
+    "medium": "white",
+    "high": "bold white",
+}
+
+CONFIDENCE_SYMBOLS = {
+    "low": "●○○",
+    "medium": "●●○",
+    "high": "●●●",
+}
+
+HEADER_STYLE = {
+    "info": "white on blue",
+    "low": "white on green",
+    "medium": "black on yellow",
+    "high": "white on red",
+    "critical": "white on red",
+}
+
 STOPWORDS = {"new", "var", "this"}
 
 
 def normalize_step_code(code: str) -> str:
     clean_code = code.strip()
+    # Remove Joern operators if present
+    if clean_code.startswith("<operator>."):
+        clean_code = clean_code.split(".", 1)[1]
+        if "(" in clean_code and clean_code.endswith(")"):
+            # Extract content between first ( and last )
+            clean_code = clean_code[clean_code.find("(") + 1 : clean_code.rfind(")")]
+
     if "):" in clean_code:
         clean_code = clean_code.split("):", 1)[1].strip()
     if ":" in clean_code and "(" in clean_code and clean_code.rfind(":") > clean_code.rfind(")"):
@@ -67,22 +94,62 @@ def build_candidates(clean_code: str) -> list[str]:
     candidates = []
     if clean_code:
         candidates.append(clean_code)
+
+    # If it's a comma-separated list (from operators), add individual parts
+    if "," in clean_code:
+        for part in clean_code.split(","):
+            p = part.strip().strip("'\"`")
+            if p:
+                candidates.append(p)
+
     if "=" in clean_code:
         rhs = clean_code.split("=", 1)[1].strip()
         if rhs:
             candidates.append(rhs)
-    # Add call-like and identifier-like spans for broader language support.
+
+    # Add call-like and identifier-like spans
     for match in re.findall(r"[A-Za-z_][\w.]*\s*\([^)]*\)", clean_code):
         candidates.append(match)
     for match in re.findall(r"[A-Za-z_][\w.]*", clean_code):
         candidates.append(match)
+
+    # Keywords to avoid as candidates unless they are the full code
+    keywords = {
+        "SELECT",
+        "FROM",
+        "WHERE",
+        "AND",
+        "OR",
+        "LIKE",
+        "ORDER",
+        "BY",
+        "LIMIT",
+        "INSERT",
+        "INTO",
+        "VALUES",
+        "UPDATE",
+        "SET",
+        "DELETE",
+        "NULL",
+        "IS",
+        "public",
+        "private",
+        "static",
+        "return",
+        "class",
+        "void",
+        "String",
+        "int",
+    }
 
     ordered = []
     for candidate in candidates:
         key = candidate.strip()
         if not key:
             continue
-        if key in STOPWORDS or len(key) < 3:
+        if len(key) < 3:
+            continue
+        if key.upper() in keywords and len(key) < len(clean_code):
             continue
         if key in seen:
             continue
@@ -199,11 +266,18 @@ class Reporter:
 
 
 class ConsoleReporter(Reporter):
-    def __init__(self, console: Console | None = None, base_path: str = ""):
+    def __init__(
+        self,
+        console: Console | None = None,
+        base_path: str = "",
+        max_findings: int = 3,
+    ):
         self.console = console or Console(theme=custom_theme)
         self.base_path = base_path
+        self.max_findings = max_findings
         self._summary_total = 0
         self._summary_rules: dict[str, int] = {}
+        self._summary_rule_severity: dict[str, str] = {}
         self._summary_severity: dict[str, int] = {
             "critical": 0,
             "high": 0,
@@ -212,6 +286,7 @@ class ConsoleReporter(Reporter):
             "info": 0,
         }
         self._summary_files: set[str] = set()
+        self._displayed_metadata: set[str] = set()
 
     def get_source_context(
         self, rel_path, line_num, tainted_code=None, col_num=None, context_lines=1
@@ -433,15 +508,33 @@ class ConsoleReporter(Reporter):
                             clean_code = normalize_step_code(step["code"])
                             if ":" in clean_code and "(" not in clean_code[: clean_code.find(":")]:
                                 clean_code = clean_code.split(":")[-1].strip()
+
                             candidates = build_candidates(clean_code)
+
+                            step_matches = []
+                            # Quote-agnostic line text for searching
+                            search_line = line_text.plain.replace("`", '"').replace("'", '"')
+
                             for candidate in candidates:
+                                # Quote-agnostic candidate
+                                search_cand = candidate.replace("`", '"').replace("'", '"')
+
                                 start_search = 0
+                                found_any = False
                                 while True:
-                                    idx = line_text.plain.find(candidate, start_search)
+                                    idx = search_line.find(search_cand, start_search)
                                     if idx == -1:
                                         break
-                                    all_matches.append((idx, idx + len(candidate)))
+                                    step_matches.append((idx, idx + len(candidate)))
                                     start_search = idx + 1
+                                    found_any = True
+
+                                if found_any:
+                                    # Found best candidate, stop looking for others for this step
+                                    break
+
+                            if step_matches:
+                                all_matches.extend(step_matches)
 
                         if all_matches:
                             # Sort by length (descending) and then by start position
@@ -461,28 +554,152 @@ class ConsoleReporter(Reporter):
 
                 if final_lines:
                     renderables.append(Group(*final_lines))
-                    legend = Table.grid(padding=(0, 1))
-                    legend.add_column(style="bold cyan", justify="right")
-                    legend.add_column(style="dim", justify="right")
-                    legend.add_column()
-                    for step in sorted(block_steps, key=_label_sort_key):
-                        code_preview = normalize_step_code(step["code"])
-                        if code_preview.startswith("<operator>"):
-                            continue
-                        if len(code_preview) > 90:
-                            code_preview = f"{code_preview[:87]}..."
-                        legend.add_row(
-                            _get_label_text(step),
-                            str(step.get("display_line") or step["line"] or "-"),
-                            Text(code_preview, style="code"),
-                        )
-
-                    renderables.append(legend)
                     if range_idx < len(line_ranges) - 1:
                         renderables.append("")
             return Group(*renderables) if renderables else None
         except Exception:
             return None
+
+    def _render_match(self, rule: ScanRule, match: Match):
+        line_display = str(match.line) if match.line is not None else "?"
+        head_style = HEADER_STYLE.get(rule.severity_name, "white on red")
+        conf_sym = CONFIDENCE_SYMBOLS.get(rule.confidence_name, "●●●")
+
+        header_text = Text()
+        # Only the name gets the background
+        header_text.append(f"{rule.name.upper()} ", style=f"bold {head_style}")
+
+        # Rest of the header is standard
+        header_text.append(" ")
+        for char in conf_sym:
+            if char == "●":
+                header_text.append(char, style="bold")
+            else:
+                header_text.append(char, style="dim")
+        header_text.append(" ")
+
+        header_text.append(f" {match.file}:{line_display} ", style="location")
+
+        renderables = []
+
+        summary = Table.grid(padding=(0, 1))
+        summary.add_column(style="bold", width=12)
+        summary.add_column()
+        summary.add_row("Sink Code", Text(match.code.strip(), style="dim"))
+        if match.bindings:
+            clean_bindings = {k: v for k, v in match.bindings.items() if not k.startswith("$.")}
+            if clean_bindings:
+                bind_str = ", ".join([f"{k}={v}" for k, v in clean_bindings.items()])
+                summary.add_row("Bindings", Text(bind_str, style="dim"))
+
+        renderables.append(summary)
+        renderables.append("")
+
+        if match.flow:
+            # 1. Collect all steps including Sink
+            all_steps = []
+            for step_model in match.flow:
+                full_path = step_model.file
+                line = str(step_model.line) if step_model.line is not None else ""
+                method = step_model.method
+                code = step_model.code
+                if method:
+                    method = method.split(".")[-1].split(":")[0]
+
+                all_steps.append(
+                    {
+                        "full_path": resolve_file_path(self.base_path, full_path) or full_path,
+                        "line": line,
+                        "method": method,
+                        "code": normalize_step_code(code),
+                        "is_sink": False,
+                    }
+                )
+
+            sink_path = resolve_file_path(self.base_path, match.file) or match.file
+            sink_line = str(match.line) if match.line is not None else ""
+            sink_code = normalize_step_code(match.code)
+
+            # Add Sink if not already the last step
+            is_same = (
+                all_steps
+                and all_steps[-1]["line"] == sink_line
+                and all_steps[-1]["code"] == sink_code
+            )
+            if not all_steps or not is_same:
+                all_steps.append(
+                    {
+                        "full_path": sink_path,
+                        "line": sink_line,
+                        "method": match.method_fullname.split("(")[0].split(".")[-1],
+                        "code": sink_code,
+                        "is_sink": True,
+                    }
+                )
+            else:
+                all_steps[-1]["is_sink"] = True
+
+            # 2. Deduplicate: keep only the longest pattern per file/line
+            deduped_steps = []
+            seen_locations = {}  # (path, line) -> index in deduped_steps
+
+            for step in all_steps:
+                loc = (step["full_path"], step["line"])
+                if loc[1]:  # Only dedup if we have a line number
+                    if loc in seen_locations:
+                        idx = seen_locations[loc]
+                        if len(step["code"]) > len(deduped_steps[idx]["code"]):
+                            # Preserve sink status if either was a sink
+                            was_sink = deduped_steps[idx]["is_sink"] or step["is_sink"]
+                            deduped_steps[idx] = step
+                            deduped_steps[idx]["is_sink"] = was_sink
+                        continue
+                    seen_locations[loc] = len(deduped_steps)
+                deduped_steps.append(step)
+
+            # 3. Assign sequential labels
+            label_count = 1
+            for step in deduped_steps:
+                if step["is_sink"]:
+                    step["label"] = "SINK"
+                else:
+                    step["label"] = str(label_count)
+                    label_count += 1
+
+            # 4. Group by file but PRESERVE ORDER of first appearance
+            file_order = []
+            file_groups = {}
+            for step in deduped_steps:
+                path = step["full_path"]
+                if path not in file_groups:
+                    file_order.append(path)
+                    fname = path.split("/")[-1] if "/" in path else path
+                    file_groups[path] = {"fname": fname, "steps": []}
+                file_groups[path]["steps"].append(step)
+
+            for path in file_order:
+                group = file_groups[path]
+                merged_context = self.get_merged_context(path, group["steps"], context_lines=2)
+                if merged_context:
+                    file_title = Text.assemble(
+                        (f" {group['fname']} ", "bold cyan"),
+                    )
+                    renderables.append(file_title)
+                    renderables.append(merged_context)
+                    renderables.append("")
+        else:
+            context = self.get_source_context(
+                match.file,
+                match.line,
+                tainted_code=match.code,
+                col_num=match.column,
+            )
+            if context:
+                renderables.append(context)
+
+        self.console.print(header_text)
+        self.console.print(Group(*renderables))
+        self.console.print("")
 
     def report(self, rule: ScanRule, matches: list[Match]):
         # Group matches by resolved (sink_file, sink_line, source_file, source_line)
@@ -519,6 +736,7 @@ class ConsoleReporter(Reporter):
             self._summary_rules[rule.name] = self._summary_rules.get(rule.name, 0) + len(
                 deduped_matches
             )
+            self._summary_rule_severity[rule.name] = rule.severity_name
             sev_key = rule.severity_name
             if sev_key in self._summary_severity:
                 self._summary_severity[sev_key] += len(deduped_matches)
@@ -528,206 +746,98 @@ class ConsoleReporter(Reporter):
                 resolved = resolve_file_path(self.base_path, match.file)
                 self._summary_files.add(resolved or match.file)
 
-        for match in deduped_matches:
-            short_method = match.method_fullname.split("(")[0].split(".")[-1]
-            line_display = str(match.line) if match.line is not None else "?"
-            sev_style = SEVERITY_STYLE.get(rule.severity_name, "bold red")
-            header_text = Text.assemble(
-                (f" {rule.name.upper()} ", f"bold white on {sev_style}"),
-                (f" {match.file}:{line_display} ", "location"),
-                (f" ({short_method}) ", "method"),
-            )
-
-            renderables = []
-
-            # Display metadata if available
-            if rule.root_cause or rule.impact:
+            # Display metadata once per rule
+            if rule.name not in self._displayed_metadata and (rule.root_cause or rule.impact):
                 metadata_table = Table.grid(padding=(0, 1))
-                metadata_table.add_column(style="bold cyan", width=12)
+                metadata_table.add_column(style="bold", width=12)
                 metadata_table.add_column()
                 if rule.root_cause:
-                    metadata_table.add_row("Root Cause", Text(rule.root_cause, style="italic"))
+                    metadata_table.add_row("Root Cause", Text(rule.root_cause, style="dim"))
                 if rule.impact:
-                    metadata_table.add_row("Impact", Text(rule.impact, style="italic yellow"))
-                renderables.append(metadata_table)
+                    metadata_table.add_row("Impact", Text(rule.impact, style="dim"))
+                self.console.print(metadata_table)
+                self.console.print("")
+                self._displayed_metadata.add(rule.name)
 
-            summary = Table.grid(padding=(0, 1))
-            summary.add_column(style="bold cyan", width=12)
-            summary.add_column()
-            summary.add_row("Sink Code", Text(match.code.strip(), style="tainted"))
-            if match.bindings:
-                clean_bindings = {k: v for k, v in match.bindings.items() if not k.startswith("$.")}
-                if clean_bindings:
-                    bind_str = ", ".join([f"{k}={v}" for k, v in clean_bindings.items()])
-                    summary.add_row("Bindings", Text(bind_str, style="yellow"))
+        # Group matches by file for reporting limits
+        matches_by_file: dict[str, list[Match]] = {}
+        for match in deduped_matches:
+            resolved = resolve_file_path(self.base_path, match.file)
+            file_key = resolved or match.file
+            if file_key not in matches_by_file:
+                matches_by_file[file_key] = []
+            matches_by_file[file_key].append(match)
 
-            renderables.append(summary)
-            renderables.append("")
+        # Sort files for deterministic output
+        sorted_files = sorted(matches_by_file.keys())
 
-            if match.flow:
-                seen_steps = set()
-                merged_steps = []
-                label_count = 1
-                last_code = None
-                for step_model in match.flow:
-                    full_path = step_model.file
-                    line = str(step_model.line) if step_model.line is not None else ""
-                    method = step_model.method
-                    code = step_model.code
+        for file_key in sorted_files:
+            file_matches = matches_by_file[file_key]
+            # Ensure matches are sorted by code length as per original logic
+            file_matches.sort(key=lambda m: len(m.code), reverse=True)
 
-                    fname = full_path.split("/")[-1] if "/" in full_path else full_path
-                    if method:
-                        method = method.split(".")[-1].split(":")[0]
+            visible_matches = file_matches
+            hidden_count = 0
+            if len(file_matches) > self.max_findings:
+                visible_matches = file_matches[: self.max_findings]
+                hidden_count = len(file_matches) - self.max_findings
 
-                    clean_code = normalize_step_code(code)
+            for match in visible_matches:
+                self._render_match(rule, match)
 
-                    if clean_code == last_code:
-                        continue
-                    step_sig = f"{fname}:{line}:{clean_code}"
-                    if step_sig in seen_steps:
-                        continue
-                    if not line and f"{fname}:ANY:{clean_code}" in seen_steps:
-                        continue
-
-                    seen_steps.add(step_sig)
-                    if not line:
-                        seen_steps.add(f"{fname}:ANY:{clean_code}")
-                    last_code = clean_code
-
-                    merged_steps.append(
-                        {
-                            "full_path": full_path,
-                            "line": line,
-                            "col": (
-                                str(step_model.column) if step_model.column is not None else ""
-                            ),
-                            "method": method,
-                            "code": clean_code,
-                            "label": str(label_count),
-                        }
-                    )
-                    label_count += 1
-
-                # Add Sink as final step if not already present
-                sink_abs_path = resolve_file_path(self.base_path, match.file)
-                if not sink_abs_path and match.flow:
-                    for step_model in reversed(match.flow):
-                        sink_abs_path = resolve_file_path(self.base_path, step_model.file)
-                        if sink_abs_path:
-                            break
-                if not sink_abs_path:
-                    sink_abs_path = match.file
-
-                sink_line = str(match.line) if match.line is not None else ""
-                sink_code = normalize_step_code(match.code)
-
-                # Check if last step is already the sink
-                if not merged_steps or not (
-                    merged_steps[-1]["line"] == sink_line and merged_steps[-1]["code"] == sink_code
-                ):
-                    merged_steps.append(
-                        {
-                            "full_path": sink_abs_path,
-                            "line": sink_line,
-                            "col": str(match.column) if match.column is not None else "",
-                            "method": match.method_fullname.split("(")[0].split(".")[-1],
-                            "code": sink_code,
-                            "label": "SINK",
-                        }
-                    )
-
-                file_groups = {}
-                for step in merged_steps:
-                    path = step["full_path"]
-                    abs_p = resolve_file_path(self.base_path, path) or path
-                    step["full_path"] = abs_p
-
-                    group_key = abs_p
-                    fname = abs_p.split("/")[-1] if "/" in abs_p else abs_p
-                    if group_key not in file_groups:
-                        file_groups[group_key] = {"fname": fname, "steps": []}
-                    file_groups[group_key]["steps"].append(step)
-
-                for group_key, group in sorted(file_groups.items()):
-                    merged_context = self.get_merged_context(
-                        group_key, group["steps"], context_lines=2
-                    )
-                    if merged_context:
-                        file_title = Text.assemble(
-                            (f" {group['fname']} ", "bold cyan"),
-                            (f" ({len(group['steps'])} steps) ", "dim"),
-                        )
-                        renderables.append(file_title)
-                        renderables.append(merged_context)
-                        renderables.append("")
-            else:
-                context = self.get_source_context(
-                    match.file,
-                    match.line,
-                    tainted_code=match.code,
-                    col_num=match.column,
+            if hidden_count > 0:
+                self.console.print(
+                    f"[dim]... and {hidden_count} other potential {rule.name} "
+                    "findings in this file.[/dim]"
                 )
-                if context:
-                    renderables.append(context)
-
-            line_width = max(self.console.width, 40)
-            header_plain = header_text.plain
-            remaining = max(0, line_width - len(header_plain) - 2)
-            left_count = remaining // 2
-            right_count = remaining - left_count
-            line_text = (
-                Text("─" * left_count + " ", style=sev_style)
-                + header_text
-                + Text(" " + ("─" * right_count), style=sev_style)
-            )
-            self.console.print(line_text)
-            self.console.print(Group(*renderables))
-            self.console.print("")
+                self.console.print("")
 
     def finalize(self):
         self.console.print(Rule("[bold cyan]Executive Summary[/bold cyan]", style="cyan"))
 
-        # Overview table
-        overview = Table(show_header=True, show_edge=True, box=None)
-        overview.add_column("Overview", style="cyan", width=15)
-        overview.add_column("", justify="right", width=10)
-        overview.add_row("Findings", Text(str(self._summary_total), style="yellow"))
-        overview.add_row("Rules hit", Text(str(len(self._summary_rules)), style="cyan"))
-        overview.add_row("Files affected", Text(str(len(self._summary_files)), style="green"))
+        # Overview table - Minimalist
+        overview = Table(show_header=False, box=None, padding=(0, 2))
+        overview.add_column(style="cyan")
+        overview.add_column(justify="right")
+        overview.add_row("Findings", Text(str(self._summary_total), style="bold yellow"))
+        overview.add_row("Rules hit", Text(str(len(self._summary_rules)), style="bold cyan"))
+        overview.add_row("Files affected", Text(str(len(self._summary_files)), style="bold green"))
 
-        # Severity table
-        sev_table = Table(show_header=True, show_edge=True, box=None)
-        sev_table.add_column("Severity", style="cyan", width=12)
-        sev_table.add_column("", justify="right", width=10)
+        # Severity table - Minimalist
+        sev_table = Table(show_header=False, box=None, padding=(0, 2))
+        sev_table.add_column(style="cyan")
+        sev_table.add_column(justify="right")
         for key in ["critical", "high", "medium", "low", "info"]:
             count = self._summary_severity.get(key, 0)
+            if count == 0:
+                continue
             sev_style = SEVERITY_STYLE.get(key, "white").replace("bold ", "")
             sev_table.add_row(
                 Text(key.capitalize(), style=sev_style),
-                Text(str(count), style=sev_style),
+                Text(str(count), style=f"bold {sev_style}"),
             )
 
-        # Display overview and severity tables side by side with padding
-        self.console.print(Columns([overview, sev_table], equal=True, expand=True))
+        # Display side-by-side
+        self.console.print(Columns([overview, sev_table], expand=False))
 
-        # Rules table (full width, below)
+        # Rules Breakdown
         if self._summary_rules:
-            rule_table = Table(show_header=True, show_edge=True, box=None)
-            rule_table.add_column("Rules Breakdown", style="cyan")
-            rule_table.add_column("", justify="right", width=10)
+            self.console.print("")
+            rule_table = Table(show_header=False, box=None, padding=(0, 2))
+            rule_table.add_column()
+            rule_table.add_column(justify="right")
+
             for rule_name, count in sorted(
                 self._summary_rules.items(), key=lambda item: (-item[1], item[0])
             ):
-                # Color code the count based on severity
-                count_text = Text(str(count))
-                if count >= 10:
-                    count_text.stylize("red")
-                elif count >= 5:
-                    count_text.stylize("yellow")
-                elif count >= 1:
-                    count_text.stylize("green")
-                rule_table.add_row(rule_name, count_text)
-            self.console.print("")
+                sev_key = self._summary_rule_severity.get(rule_name, "info")
+                sev_style = SEVERITY_STYLE.get(sev_key, "white").replace("bold ", "")
+
+                rule_text = Text(rule_name, style=sev_style)
+                count_text = Text(str(count), style=f"bold {sev_style}")
+
+                rule_table.add_row(rule_text, count_text)
+
             self.console.print(rule_table)
 
 
@@ -853,6 +963,8 @@ class SliceReporter(Reporter):
             if not full:
                 return ""
             base = full.split("(", 1)[0]
+            if ":" in base and "::" not in base:
+                base = base.split(":")[0]
             return base.split(".")[-1].split("::")[-1]
 
         def is_parameter_node(n: SliceNode) -> bool:
@@ -1041,8 +1153,8 @@ class SliceReporter(Reporter):
             sink_file = sink_node.parentFile or ""
             sink_method = short_method(sink_node.parentMethod)
             header = Text.assemble(
-                (f"SINK {i}", "bold red"),
-                ("  ", "dim"),
+                ("█ ", "red"),
+                (f"SINK {i} ", "bold"),
             )
             header.append(node_text(sink_node))
             self.console.print(header)
@@ -1314,8 +1426,9 @@ class UsageSliceReporter(Reporter):
             line = obj_slice.get("lineNumber", "?")
 
             header = Text.assemble(
-                (" USAGES ", "step_header"),
-                (f" {full_name} ", "bold cyan"),
+                ("█ ", "blue"),
+                ("USAGES ", "bold"),
+                (f"{full_name} ", "bold cyan"),
                 (f"({file_name}:{line})", "location"),
             )
 
@@ -1441,6 +1554,11 @@ class SarifReporter(Reporter):
                     if rule.severity == Severity.medium
                     else "note"
                 ),
+                rank={
+                    "high": 100.0,
+                    "medium": 70.0,
+                    "low": 30.0,
+                }.get(rule.confidence_name, 50.0),
                 locations=[
                     om.Location(
                         physicalLocation=om.PhysicalLocation2(

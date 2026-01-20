@@ -1,4 +1,4 @@
-from ..core.rule import ScanRule, Severity
+from ..core.rule import Confidence, ScanRule, Severity
 from ..dsl.patterns import (
     Call,
     Field,
@@ -487,6 +487,7 @@ def get_scan_rules(coverage: str = "precision") -> list[ScanRule]:
             .flows_to(PrototypePollutionSink(coverage))
             .passes_not(PrototypePollutionSanitizer()),
             severity=Severity.medium,
+            confidence=Confidence.medium,
             root_cause="Untrusted input reaches object merge/assign helpers without key filtering.",
             impact="Potential privilege escalation or RCE via poisoned prototypes.",
         ),
@@ -494,6 +495,7 @@ def get_scan_rules(coverage: str = "precision") -> list[ScanRule]:
             name="Unsafe Population (Mass Assignment)",
             query=Query.source(source).flows_to(UnsafePopulationSink()),
             severity=Severity.medium,
+            confidence=Confidence.medium,
             root_cause="Untrusted input is used to populate multiple fields of an object at once.",
             impact="Unauthorized modification of sensitive fields.",
         ),
@@ -505,6 +507,7 @@ def get_scan_rules(coverage: str = "precision") -> list[ScanRule]:
                 .is_not_dominated_by(AuthBarrier())
             ),
             severity=Severity.high,
+            confidence=Confidence.medium,
             root_cause="A dangerous operation is reachable without an auth check.",
             impact="Unauthorized users may execute sensitive operations.",
         ),
