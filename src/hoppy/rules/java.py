@@ -428,7 +428,7 @@ def get_discovery_heuristics() -> list[DiscoveryHeuristic]:
             suspicious_params=["cmd", "command", "args", "shell", "script"],
         ),
         DiscoveryHeuristic(
-            category="SQL Injection",
+            category="Database",
             patterns=[
                 ".*java\\.sql\\.Statement\\.execute.*",
                 ".*java\\.sql\\.Connection\\.prepare(Statement|Call).*",

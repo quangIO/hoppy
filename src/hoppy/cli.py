@@ -365,18 +365,24 @@ def discover(
 
             param_display = ", ".join(param_strs)
             loc = f"{os.path.basename(w['file'])}:{w['line']}"
-            score = w.get("score", 0)
 
             console.print(
                 f"[bold cyan]{w['name']}[/bold cyan] ({param_display}) "
-                f"[dim]{loc}[/dim] [bold yellow](score: {score})[/bold yellow]"
+                f"[dim]{loc}[/dim]"
             )
 
+            # Group calls by category
+            cat_calls = {}
             for call in w["dangerousCalls"]:
-                c_score = call.get("score", 0)
+                cat = call["category"]
+                if cat not in cat_calls:
+                    cat_calls[cat] = []
+                cat_calls[cat].append(f"`{call['fullName']}`")
+
+            for cat, calls in sorted(cat_calls.items()):
+                calls_str = ", ".join(calls)
                 console.print(
-                    f"  ↳ [yellow]{call['category']}[/yellow]: calls `{call['name']}` "
-                    f"[dim](score: {c_score})[/dim]"
+                    f"  ↳ [yellow]{cat}[/yellow]: calls {calls_str}"
                 )
             console.print("")
 

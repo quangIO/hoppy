@@ -129,7 +129,10 @@ def SqlSink(coverage: str = "precision") -> Pattern:
                 r"|pg.*[:\.]query"
                 r"|mysql.*[:\.]query"
                 r"|mariadb.*[:\.]query"
-                r"|sqlite3.*[:\.](all|get|run)).*"
+                r"|sqlite3.*[:\.](all|get|run)"
+                r"|typeorm.*[:\.]query"
+                r"|prisma.*[:\.]\$queryRaw"
+                r"|prisma.*[:\.]\$executeRaw).*"
             ),
             args=[arg],
         )
@@ -140,7 +143,10 @@ def SqlSink(coverage: str = "precision") -> Pattern:
             r"|pg.*[:\.]query"
             r"|mysql.*[:\.]query"
             r"|mariadb.*[:\.]query"
-            r"|sqlite3.*[:\.](all|get|run)).*"
+            r"|sqlite3.*[:\.](all|get|run)"
+            r"|typeorm.*[:\.]query"
+            r"|prisma.*[:\.]\$queryRaw"
+            r"|prisma.*[:\.]\$executeRaw).*"
         ),
         args=[arg],
     )
@@ -529,9 +535,9 @@ def get_discovery_heuristics() -> list[DiscoveryHeuristic]:
             suspicious_params=["cmd", "command", "args", "shell", "script"],
         ),
         DiscoveryHeuristic(
-            category="SQL Injection",
+            category="Database",
             patterns=[
-                ".*(sequelize.*[:\\.]query|knex.*[:\\.](raw|whereRaw)|pg.*[:\\.]query|mysql.*[:\\.]query|mariadb.*[:\\.]query|sqlite3.*[:\\.](all|get|run)).*"
+                ".*(sequelize.*[:\\.]query|knex.*[:\\.](raw|whereRaw)|pg.*[:\\.]query|mysql.*[:\\.]query|mariadb.*[:\\.]query|sqlite3.*[:\\.](all|get|run)|typeorm.*[:\\.]query|prisma.*[:\\.]\\$(queryRaw|executeRaw)).*"
             ],
             weight=9,
             suspicious_params=["sql", "query", "table", "where"],

@@ -359,7 +359,7 @@ def get_discovery_heuristics() -> list[DiscoveryHeuristic]:
             suspicious_params=["cmd", "command", "args", "shell", "script"],
         ),
         DiscoveryHeuristic(
-            category="SQL Injection",
+            category="Database",
             patterns=[
                 ".*Microsoft\\.EntityFrameworkCore.*ExecuteSql.*",
                 ".*Microsoft\\.EntityFrameworkCore.*FromSql.*",
