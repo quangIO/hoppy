@@ -429,11 +429,6 @@ def call_graph_cmd(
             console.print("[yellow]No matching methods found.[/yellow]")
             return
 
-        if len(start_methods) > 10:
-            console.print(f"[yellow]Warning: Found {len(start_methods)} matching methods. This might be noisy.[/yellow]")
-            if not typer.confirm("Do you want to continue?"):
-                raise typer.Abort()
-
         from .rules import get_discovery_heuristics
 
         heuristics = get_discovery_heuristics(language)
