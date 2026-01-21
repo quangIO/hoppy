@@ -386,6 +386,123 @@ def discover(
                 )
             console.print("")
 
+@app.command(name="call-graph")
+def call_graph_cmd(
+    path: str = typer.Argument(".", help="Path to the source code."),
+    method: str | None = typer.Option(None, "--method", "-m", help="Full name of the starting method."),
+    pattern: str = typer.Option(".*", "--pattern", "-p", help="Pattern to match method names (if --method not specified)."),
+    file_pattern: str = typer.Option(".*", "--file", "-f", help="Pattern to match file names."),
+    direction: str = typer.Option(
+        "callee", "--direction", "-d", help="Direction: 'caller' or 'callee'."
+    ),
+    depth: int = typer.Option(5, "--depth", help="Max depth for traversal."),
+    exclude: list[str] | None = typer.Option(None, "--exclude", "-e", help="Patterns to exclude."),
+    language: str | None = typer.Option(None, "--lang", "-l", help="Language filter."),
+):
+    """
+    Displays call graphs starting from matching methods.
+    """
+    with Analyzer() as analyzer:
+        lang_map = {
+            "python": "PYTHONSRC",
+            "java": "JAVASRC",
+            "csharp": "CSHARP",
+            "javascript": "JSSRC",
+        }
+        analyzer.load_code(
+            os.path.abspath(path),
+            language=lang_map.get(language.lower()) if language else None,
+        )
+
+        if method:
+            start_methods = [method]
+        else:
+            # Discover matching methods
+            with console.status("[bold info]Finding matching methods...[/bold info]"):
+                res = analyzer.list_methods(pattern=pattern, file_pattern=file_pattern, internal_only=True)
+                if not res:
+                    console.print(f"[red]Failed to find methods: {res.failure()}[/red]")
+                    return
+                start_methods = res.unwrap()
+
+        if not start_methods:
+            console.print("[yellow]No matching methods found.[/yellow]")
+            return
+
+        if len(start_methods) > 10:
+            console.print(f"[yellow]Warning: Found {len(start_methods)} matching methods. This might be noisy.[/yellow]")
+            if not typer.confirm("Do you want to continue?"):
+                raise typer.Abort()
+
+        from .rules import get_discovery_heuristics
+
+        heuristics = get_discovery_heuristics(language)
+        interesting = []
+        for h in heuristics:
+            interesting.extend(h.patterns)
+
+        # Default exclusions for standard libraries
+        default_excludes = [
+            r"java\..*",
+            r"javax\..*",
+            r"sun\..*",
+            r"jdk\..*",
+            r"org\.springframework\..*",
+            r"posix\..*",
+            r"nt\..*",
+            r"_.*",  # Python internals
+            r"typing\..*",
+            r"abc\..*",
+            r"genericpath\..*",
+            r"axios\..*",
+            r"fs\..*",
+            r"path\..*",
+        ]
+        all_excludes = default_excludes + (exclude or [])
+
+        def print_node(node, current_depth=0, is_last=True, prefix=""):
+            connector = "└── " if is_last else "├── "
+            color = "cyan" if current_depth == 0 else "white"
+
+            # Check if this node is interesting (matches a dangerous pattern)
+            import re
+
+            is_interesting = any(re.match(p, node["fullName"]) for p in interesting)
+            if is_interesting:
+                color = "yellow"
+
+            label = f"[{color}]{node['name']}[/{color}] [dim]({node['fullName']})[/dim]"
+            if is_interesting:
+                label += " [bold yellow][CAP][/bold yellow]"
+
+            console.print(f"{prefix}{connector}{label}")
+
+            new_prefix = prefix + ("    " if is_last else "│   ")
+            children = node.get("children", [])
+            for i, child in enumerate(children):
+                print_node(child, current_depth + 1, i == len(children) - 1, new_prefix)
+
+        for m_name in start_methods:
+            result = analyzer.get_call_graph(
+                m_name,
+                direction=direction,
+                depth=depth,
+                exclude_patterns=all_excludes,
+                interesting_patterns=interesting,
+            )
+
+            if not result or result.unwrap() is None:
+                continue
+
+            tree = result.unwrap()
+            # Omit methods that don't call anyone (or aren't called by anyone)
+            if not tree.get("children"):
+                continue
+
+            print_node(tree)
+            console.print("")
+
+
 @app.command(name="list-methods")
 def list_methods_cmd(
     path: str = typer.Argument(".", help="Path to the source code to analyze."),

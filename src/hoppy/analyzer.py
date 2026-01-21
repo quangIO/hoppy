@@ -178,12 +178,19 @@ class Analyzer:
             .bind(self._ensure_list_or_empty)
         )
 
-    def list_methods(self, pattern: str = ".*") -> Result[list[str], Exception]:
-        """List all method definitions matching a regex pattern (name or fullName)."""
+    def list_methods(
+        self, pattern: str = ".*", internal_only: bool = False, file_pattern: str = ".*"
+    ) -> Result[list[str], Exception]:
+        """List all method definitions matching regex patterns (name or fullName)."""
+        import json
+
         esc_pattern = json.dumps(pattern)[1:-1]
+        esc_file = json.dumps(file_pattern)[1:-1]
+        internal_filter = " && !m.isExternal" if internal_only else ""
         scala = (
             f'ujson.Arr(cpg.method.filter(m => (m.name.matches("{esc_pattern}") || '
             f'm.fullName.matches("{esc_pattern}")) && '
+            f'm.filename.matches("{esc_file}"){internal_filter} && '
             f'!m.name.startsWith("<operator>") && '
             f'!m.fullName.startsWith("<operator>") && '
             f'!m.fullName.contains("\\n") && '
@@ -523,6 +530,94 @@ class Analyzer:
             self.session.run_scala(scala)
             .bind(self.session._parse_json_result)
             .bind(self._ensure_list)
+        )
+
+    def get_call_graph(
+        self,
+        method_name: str,
+        direction: str = "callee",
+        depth: int = 5,
+        exclude_patterns: list[str] | None = None,
+        interesting_patterns: list[str] | None = None,
+    ) -> Result[dict[str, Any], Exception]:
+        """
+        Retrieves a call graph (tree) starting from a specific method.
+        """
+        import json
+
+        esc_method = json.dumps(method_name)[1:-1]
+        exclude_json = json.dumps(exclude_patterns or [])
+        interesting_json = json.dumps(interesting_patterns or [])
+
+        scala = f"""
+        import io.shiftleft.codepropertygraph.generated.nodes
+        import io.shiftleft.semanticcpg.language._
+        import ujson._
+
+        val excludeList = ujson.read(\"\"\"{exclude_json}\"\"\").arr.map(_.str).l
+        val interestingList = ujson.read(\"\"\"{interesting_json}\"\"\").arr.map(_.str).l
+
+        def isExcluded(name: String): Boolean = {{
+          excludeList.exists(p => name.matches(p))
+        }}
+
+        def isInteresting(name: String): Boolean = {{
+          interestingList.exists(p => name.matches(p))
+        }}
+
+        def buildTree(
+            curr: nodes.Method,
+            currentDepth: Int,
+            visited: Set[String]
+        ): ujson.Obj = {{
+          val fullName = curr.fullName
+          val node = ujson.Obj(
+            "name" -> curr.name,
+            "fullName" -> fullName,
+            "file" -> curr.filename,
+            "line" -> curr.lineNumber.getOrElse(-1)
+          )
+
+          if (currentDepth >= {depth} || visited.contains(fullName)) {{
+             node("children") = ujson.Arr()
+             return node
+          }}
+
+          val nextVisited = visited + fullName
+
+          val nextMethods = if ("{direction}" == "callee") {{
+             curr.call.filter(c => !c.name.startsWith("<operator>"))
+               .flatMap(_.callee).filter(m => !isExcluded(m.fullName)).distinct.l
+          }} else {{
+             curr.callIn.method.filter(m => !isExcluded(m.fullName)).distinct.l
+          }}
+
+          val children = nextMethods.flatMap {{ m =>
+             // Pruning: if we are going deep, only keep paths that are "interesting"
+             // or lead to something interesting (heuristic: if it's not external, keep it)
+             val shouldKeep = if (interestingList.nonEmpty) {{
+                isInteresting(m.fullName) || !m.isExternal
+             }} else true
+
+             if (shouldKeep) {{
+                Some(buildTree(m, currentDepth + 1, nextVisited))
+             }} else None
+          }}
+
+          node("children") = ujson.Arr(children*)
+          node
+        }}
+
+        val startMethod = cpg.method.fullName("{esc_method}").headOption
+        startMethod match {{
+          case Some(m) => buildTree(m, 0, Set.empty)
+          case None => ujson.Null
+        }}
+        """
+        return (
+            self.session.run_scala(scala)
+            .bind(self.session._parse_json_result)
+            .map(lambda r: cast(dict[str, Any], r))
         )
 
     def _group_api_summary(self, fullnames: list[str]) -> dict[str, list[str]]:
