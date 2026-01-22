@@ -5,6 +5,7 @@ description = "A pythonic DSL for Joern CPGs"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "paqpy>=1.4.1",
     "pydantic>=2.12.5",
     "requests>=2.32.5",
     "returns>=0.26.0",

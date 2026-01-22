@@ -344,6 +344,21 @@ def get_scan_rules(coverage: str = "precision") -> list[ScanRule]:
     ]
 
 
+def get_barrier_heuristics() -> list[DiscoveryHeuristic]:
+    """
+    Returns authentication barrier heuristics for C#.
+    """
+    return [
+        DiscoveryHeuristic(
+            category="Auth Barrier",
+            patterns=[
+                r"(?i).*(Authorize|AuthorizeJwtBearer).*",
+                r"(?i).*(IsAuthenticated|HasPermission|checkAuth|VerifyToken|ValidateUser).*",
+            ],
+        )
+    ]
+
+
 def get_discovery_heuristics() -> list[DiscoveryHeuristic]:
     """
     Returns discovery heuristics for C#.
@@ -398,5 +413,13 @@ def get_discovery_heuristics() -> list[DiscoveryHeuristic]:
             ],
             weight=10,
             suspicious_params=["code", "data", "expr", "payload"],
+        ),
+        DiscoveryHeuristic(
+            category="Cryptography",
+            patterns=[
+                r".*(System\.Security\.Cryptography\.(HashAlgorithm|SymmetricAlgorithm|AsymmetricAlgorithm|KeyDerivation|PBKDF2)|Microsoft\.IdentityModel\.Tokens\.JsonWebTokenHandler|System\.IdentityModel\.Tokens\.Jwt\.JwtSecurityTokenHandler).*"
+            ],
+            weight=6,
+            suspicious_params=["password", "secret", "key", "token", "hash", "salt"],
         ),
     ]

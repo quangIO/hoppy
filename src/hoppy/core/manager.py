@@ -10,7 +10,7 @@ from typing import Any, TypeVar
 from urllib.parse import urlparse
 
 import requests
-from returns.result import Result, safe
+from returns.result import Result, Success, safe
 
 from .. import installer
 
@@ -336,26 +336,33 @@ class JoernSession:
         path: str,
         language: str | None = None,
         joern_parse_args: list[str] | None = None,
+        use_cache: bool = True,
     ) -> Result[str, Exception]:
+        from .cache import CpgCache
         abs_path = os.path.abspath(path)
         self.run_scala("workspace.projects.foreach(p => close(p.name))")
 
-        if joern_parse_args:
+        if use_cache:
+            cache = CpgCache()
+            cached_path = cache.get(abs_path, language=language, joern_args=joern_parse_args)
+            if cached_path:
+                logger.info(f"Using cached CPG for {abs_path}")
+                return self.load_cpg(cached_path)
+
+        # For everything we want to cache, we prefer using joern-parse 
+        # because it's a standalone tool that produces a solid CPG file.
+        if use_cache or os.path.isdir(abs_path) or joern_parse_args:
             return self._import_with_joern_parse(
                 abs_path,
                 language=language,
                 joern_parse_args=joern_parse_args,
+                use_cache=use_cache,
             )
 
-        # For single files, Joern sometimes fails to set the FILENAME property correctly
-        # if we don't specify a project name.
+        # For single files where caching is disabled, we can use importCode directly
         lang_arg = f', language="{language}"' if language else ""
-        if os.path.isfile(abs_path):
-            project_name = os.path.basename(abs_path)
-            cmd = f'importCode(inputPath="{abs_path}", projectName="{project_name}"{lang_arg})'
-        else:
-            cmd = f'importCode(inputPath="{abs_path}"{lang_arg})'
-
+        project_name = os.path.basename(abs_path)
+        cmd = f'importCode(inputPath="{abs_path}", projectName="{project_name}"{lang_arg})'
         return self.send_command(cmd).map(self._report_import_status)
 
     def _import_with_joern_parse(
@@ -363,6 +370,7 @@ class JoernSession:
         abs_path: str,
         language: str | None,
         joern_parse_args: list[str],
+        use_cache: bool = True,
     ) -> Result[str, Exception]:
         if self._explicit_server:
             parsed = urlparse(self.server_url or "")
@@ -396,8 +404,30 @@ class JoernSession:
                 cmd.append("--frontend-args")
                 cmd.extend(joern_parse_args)
 
-        subprocess.run(cmd, check=True)
-        return self.send_command(f'importCpg("{output_path}")').map(self._report_import_status)
+        log_path = os.path.join(workspace, "joern-parse.log")
+        with open(log_path, "w") as log_file:
+            try:
+                subprocess.run(
+                    cmd,
+                    stdout=log_file,
+                    stderr=subprocess.STDOUT,
+                    check=True,
+                )
+            except subprocess.CalledProcessError as e:
+                # On failure, read the log and raise a more descriptive error
+                if os.path.exists(log_path):
+                    with open(log_path, "r") as f:
+                        log_content = f.read()
+                    raise RuntimeError(f"joern-parse failed with exit code {e.returncode}:\n{log_content}") from e
+                raise
+        
+        res = self.send_command(f'importCpg("{output_path}")').map(self._report_import_status)
+        
+        if use_cache and isinstance(res, Success):
+            from .cache import CpgCache
+            CpgCache().put(abs_path, output_path, language=language, joern_args=joern_parse_args)
+            
+        return res
 
     def _parse_workspace(self) -> str:
         if self.workspace:
@@ -417,7 +447,8 @@ class JoernSession:
 
     def load_cpg(self, cpg_path: str) -> Result[str, Exception]:
         abs_path = os.path.abspath(cpg_path)
-        self.run_scala("workspace.projects.foreach(p => close(p.name))")
+        # Use importCpg directly, Joern will handle workspace integration.
+        # We don't close all projects here to avoid race conditions or workspace corruption.
         return self.send_command(f'importCpg("{abs_path}")')
 
     def _wrap_script(self, scala_code: str) -> str:

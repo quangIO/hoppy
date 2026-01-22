@@ -112,6 +112,7 @@ name = "hoppy"
 version = "0.1.2"
 source = { editable = "." }
 dependencies = [
+    { name = "paqpy" },
     { name = "pydantic" },
     { name = "requests" },
     { name = "returns" },
@@ -128,6 +129,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "paqpy", specifier = ">=1.4.1" },
     { name = "pydantic", specifier = ">=2.12.5" },
     { name = "requests", specifier = ">=2.32.5" },
     { name = "returns", specifier = ">=0.26.0" },
@@ -188,6 +190,19 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/a1/d4/1fc4078c65507b51b96ca8f8c3ba19e6a61c8253c72794544580a7b6c24d/packaging-25.0.tar.gz", hash = "sha256:d443872c98d677bf60f6a1f2f8c1cb748e8fe762d2bf9d3148b5599295b0fc4f", size = 165727, upload-time = "2025-04-19T11:48:59.673Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/20/12/38679034af332785aac8774540895e234f4d07f7545804097de4b666afd8/packaging-25.0-py3-none-any.whl", hash = "sha256:29572ef2b1f17581046b3a2227d5c611fb25ec70ca1ba8554b24b0e69331a484", size = 66469, upload-time = "2025-04-19T11:48:57.875Z" },
+]
+
+[[package]]
+name = "paqpy"
+version = "1.4.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/4d/37/7c0c21830188e2e9fd43649974cd015491aa6e6ee400eac96d2c9c9edf74/paqpy-1.4.1.tar.gz", hash = "sha256:f6cf3a78ae3c0456884e09d1f3c52089a81b97a3754dffd6572f9e64ba0478b9", size = 7819, upload-time = "2025-12-30T00:23:48.03Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ad/93/829a0cb2de6e45f075a84dd84ae077c4602e9cd71a90781db127284a1bd6/paqpy-1.4.1-cp37-abi3-macosx_10_12_x86_64.whl", hash = "sha256:6d412b9ea47f98508a1e5d64427bf96cfcb28688af50da43e475784819e2fb64", size = 323115, upload-time = "2025-12-30T00:23:41.88Z" },
+    { url = "https://files.pythonhosted.org/packages/a2/b5/767a285feb4ff64fc5c0a74814eae54e578318dfa9c3d341af4b75c41c05/paqpy-1.4.1-cp37-abi3-macosx_11_0_arm64.whl", hash = "sha256:6d8ee9cf696393c20a7a455f263debdc40c9a098faa56c10318b8770ec91f769", size = 307526, upload-time = "2025-12-30T00:23:43.42Z" },
+    { url = "https://files.pythonhosted.org/packages/56/c8/1101801cd93adfe3a626f569594605a555ef259a37222ab9c16b152a2e62/paqpy-1.4.1-cp37-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:2729750d6f1c0919364d9bfe1ba6ac93f302064accfc704579a57e93efa2759d", size = 350826, upload-time = "2025-12-30T00:23:44.704Z" },
+    { url = "https://files.pythonhosted.org/packages/4f/4b/80d98039c65900d18c55ae6c06cf3fd3432048c976e7a500424ee6d33a32/paqpy-1.4.1-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:1d8e8bff6f35336d87a737b2195e0bb51b6a90fb26cef9e7d9ae514f3bc5309a", size = 366903, upload-time = "2025-12-30T00:23:45.909Z" },
+    { url = "https://files.pythonhosted.org/packages/0a/33/3b224a8e56d84996149f288860cc0575adbb41a38122941e01448e77f719/paqpy-1.4.1-cp37-abi3-win_amd64.whl", hash = "sha256:9ab2cbeb34bdb3877d46a26883ee27ad92d69cb43f4beb604422650e7efe7bb3", size = 207307, upload-time = "2025-12-30T00:23:46.864Z" },
 ]
 
 [[package]]

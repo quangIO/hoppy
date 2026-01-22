@@ -521,6 +521,21 @@ def get_scan_rules(coverage: str = "precision") -> list[ScanRule]:
     ]
 
 
+def get_barrier_heuristics() -> list[DiscoveryHeuristic]:
+    """
+    Returns authentication barrier heuristics for JavaScript.
+    """
+    return [
+        DiscoveryHeuristic(
+            category="Auth Barrier",
+            patterns=[
+                r"(?i).*(UseGuards|AuthGuard|JwtAuthGuard|Roles|RoleGuard|PermissionGuard).*",
+                r"(?i).*(auth|authenticate|authorize|verifyToken|isAuthenticated|requireAuth).*",
+            ],
+        )
+    ]
+
+
 def get_discovery_heuristics() -> list[DiscoveryHeuristic]:
     """
     Returns discovery heuristics for JavaScript.
@@ -553,17 +568,23 @@ def get_discovery_heuristics() -> list[DiscoveryHeuristic]:
         DiscoveryHeuristic(
             category="Network",
             patterns=[
-                ".*(axios($|[:\\.](get|post|put|delete|head|options|request))|fetch|node-fetch|http.*[:\\.](get|request)|https.*[:\\.](get|request)|request[:\\.].*|superagent[:\\.].*|got[:\\.].*).*"
+                r".*(axios($|[:\.](get|post|put|delete|head|options|request))|fetch|node-fetch|http.*[:\.](get|request)|https.*[:\.](get|request)|(^|[:\.])request($|[:\.].*)|superagent[:\.].*|got[:\.].*).*"
             ],
             weight=8,
             suspicious_params=["url", "host", "uri", "endpoint"],
         ),
         DiscoveryHeuristic(
             category="Code Injection",
-            patterns=[
-                ".*(eval|Function|vm.*[:\\.]run(InNewContext|InContext|Script)).*"
-            ],
+            patterns=[".*(eval|Function|vm.*[:\\.]run(InNewContext|InContext|Script)).*"],
             weight=10,
             suspicious_params=["code", "data", "expr", "payload"],
+        ),
+        DiscoveryHeuristic(
+            category="Cryptography",
+            patterns=[
+                r".*(crypto.*[:\\.](createHash|createHmac|createCipheriv|createDecipheriv|pbkdf2|scrypt|randomBytes)|bcrypt.*[:\\.](hash|compare)|argon2.*[:\\.](hash|verify)|jsonwebtoken.*[:\\.](sign|verify)).*"
+            ],
+            weight=6,
+            suspicious_params=["password", "secret", "key", "token", "hash", "salt"],
         ),
     ]

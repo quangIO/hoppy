@@ -17,6 +17,7 @@ class Endpoint:
     action: str
     fullname: str
     is_protected: bool
+    guards: list[str] = field(default_factory=list)
     capabilities: dict[str, list[str]] = field(default_factory=dict)
 
 
@@ -24,6 +25,7 @@ def display_endpoints(endpoints: list[Endpoint], console: Console | None = None)
     """
     Displays a tree of endpoints and their authentication status.
     """
+    import re
     console = console or Console()
     root = Tree("[bold magenta]Attack Surface[/bold magenta]", guide_style="bright_blue")
 
@@ -44,11 +46,20 @@ def display_endpoints(endpoints: list[Endpoint], console: Console | None = None)
         c_node = root.add(f"[bold cyan]{display_name}[/bold cyan]")
 
         for e in sorted(by_controller[controller], key=lambda x: x.action):
-            status = (
-                "[bold green]PROTECTED[/bold green]"
-                if e.is_protected
-                else "[bold yellow]🔓 PUBLIC[/bold yellow]"
-            )
+            if e.is_protected:
+                if e.guards:
+                    cleaned = []
+                    for b in e.guards:
+                        c = re.sub(r"\s+", " ", b).strip()
+                        if len(c) > 60:
+                            c = c[:57] + "..."
+                        cleaned.append(c)
+                    guard_str = ", ".join(cleaned)
+                    status = f"[bold green]Guarded: {guard_str}[/bold green]"
+                else:
+                    status = "[bold green]Protected?[/bold green]"
+            else:
+                status = "[bold yellow]PUBLIC?[/bold yellow]"
 
             cap_str = ""
             if e.capabilities:
@@ -67,7 +78,7 @@ def display_endpoints(endpoints: list[Endpoint], console: Console | None = None)
                     caps.append(f"[blue]{icons.get(cap, '')} {cap}{evidence_str}[/blue]")
                 cap_str = "  " + " ".join(caps)
 
-            c_node.add(f"[italic]{e.action}[/italic]  ({status}){cap_str}")
+            c_node.add(f"[italic]{e.action}[/italic]  ([{status}]){cap_str}")
 
     console.print(root)
     console.print("")
@@ -87,26 +98,73 @@ def get_endpoints(
     endpoints_matches = analyzer.execute(Query.source(controller_pattern).summary()).value_or([])
 
     # 2. Identify which of these are "Protected"
-    barrier = ruleset.AuthBarrier() if ruleset else rules.AuthBarrier()
-    bypass = ruleset.AuthBypass() if ruleset else rules.AuthBypass()
+    barrier_pattern = ruleset.AuthBarrier() if ruleset else rules.AuthBarrier()
+    bypass_pattern = ruleset.AuthBypass() if ruleset else rules.AuthBypass()
+    
+    barrier_pred = barrier_pattern.to_cpg_predicate()
+    
+    barrier_heuristics = rules.get_barrier_heuristics(language)
+    import json
+    barriers_json = json.dumps([{"category": h.category, "patterns": h.patterns} for h in (barrier_heuristics or [])])
 
-    # A method is protected if it's guarded by a barrier.
-    # Our improved Method pattern also checks class-level annotations.
-    protected_query = Query.source(
-        Return().inside(controller_pattern).is_dominated_by(barrier)
-    ).summary()
-    protected_matches = analyzer.execute(protected_query).value_or([])
-    protected_sigs = set(m.method_fullname for m in protected_matches)
-
-    if lang == "javascript":
-        guarded_query = Query.source(controller_pattern.where(barrier)).summary()
-        guarded_matches = analyzer.execute(guarded_query).value_or([])
-        protected_sigs.update(m.method_fullname for m in guarded_matches)
-
-    # A method is explicitly EXEMPT if it has an AuthBypass annotation.
-    bypass_query = Query.source(controller_pattern.where(bypass)).summary()
+    # Improved Scala query to find endpoints and their specific guards
+    endpoint_fullnames = [m.method_fullname for m in endpoints_matches]
+    methods_json = json.dumps(endpoint_fullnames)
+    
+    # Identify explicit EXEMPT if it has an AuthBypass annotation.
+    bypass_query = Query.source(controller_pattern.where(bypass_pattern)).summary()
     bypass_matches = analyzer.execute(bypass_query).value_or([])
     bypass_sigs = set(m.method_fullname for m in bypass_matches)
+
+    guard_mapping = {}
+    if endpoint_fullnames:
+        scala_guards = f"""
+        import io.shiftleft.codepropertygraph.generated.nodes
+        import io.shiftleft.semanticcpg.language._
+        import ujson._
+
+        val startMethodsList = ujson.read(\"\"\"{methods_json}\"\"\").arr.map(_.str).l
+        val barrierHeuristics = ujson.read(\"\"\"{barriers_json}\"\"\").arr
+        val isAuthBarrier = {barrier_pred}
+
+        def getBarriers(m: nodes.Method): List[String] = {{
+          if (isAuthBarrier(m)) {{
+             val fromAnnotation = (m.start.annotation ++ m.typeDecl.annotation).filter(a => 
+                barrierHeuristics.exists(_.obj("patterns").arr.map(_.str).exists(p => a.name.matches(p)))
+             ).code.l
+
+             val fromCalls = m.call.filter(c => 
+                barrierHeuristics.exists(_.obj("patterns").arr.map(_.str).exists(p => c.methodFullName.matches(p) || c.name.matches(p)))
+             ).code.l
+             
+             if (fromAnnotation.nonEmpty || fromCalls.nonEmpty) {{
+                (fromAnnotation ++ fromCalls).distinct
+             }} else if (m.name.toLowerCase.matches(".*(auth|login|verify|perm|authorize|secure).*")) {{
+                List(m.name)
+             }} else {{
+                List.empty
+             }}
+          }} else List.empty
+        }}
+
+        val mapping = startMethodsList.flatMap {{ mName =>
+          cpg.method.fullNameExact(mName).map {{ m =>
+             val directGuards = getBarriers(m)
+             val dominatedGuards = if (directGuards.isEmpty) {{
+                // Check if the method is dominated by a barrier in the CFG
+                m.start.isReturn.dominatedBy.collectAll[nodes.CfgNode].filter(isAuthBarrier).code.l
+             }} else List.empty
+             
+             mName -> ujson.Arr((directGuards ++ dominatedGuards).distinct.map(ujson.Str(_))*)
+          }}
+        }}.toMap
+
+        ujson.Obj.from(mapping)
+        """
+        result = analyzer.raw_scala(scala_guards, prelude=analyzer.session.prelude).bind(
+            analyzer.session._parse_json_result
+        )
+        guard_mapping = result.value_or({})
 
     # 3. Identify Capabilities (Side Effects) using Backwards Call Graph Traversal
     capability_regexes = slicing_rules.get_capability_rules(lang or "")
@@ -206,14 +264,17 @@ def get_endpoints(
             continue
         seen_actions.add((controller, action))
 
-        # It's protected if it matched the protected query AND it's not explicitly bypassed
-        is_authed = (fullname in protected_sigs) and (fullname not in bypass_sigs)
+        # It's protected if it has guards and it's not explicitly bypassed
+        guards = guard_mapping.get(fullname, [])
+        is_authed = (len(guards) > 0) and (fullname not in bypass_sigs)
+        
         endpoints.append(
             Endpoint(
                 controller=controller,
                 action=action,
                 fullname=fullname,
                 is_protected=is_authed,
+                guards=guards,
                 capabilities=capabilities_by_endpoint.get(fullname, {}),
             )
         )

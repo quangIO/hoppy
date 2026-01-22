@@ -406,6 +406,22 @@ def get_scan_rules(coverage: str = "precision") -> list[ScanRule]:
     ]
 
 
+def get_barrier_heuristics() -> list[DiscoveryHeuristic]:
+    """
+    Returns authentication barrier heuristics for Python.
+    """
+    return [
+        DiscoveryHeuristic(
+            category="Auth Barrier",
+            patterns=[
+                r"(?i).*(auth|login|verify_token|check_perm|authenticate).*",
+                r"(?i).*(requires_auth|restricted|login_required).*",
+                r".*\.is_authenticated",
+            ],
+        )
+    ]
+
+
 def get_discovery_heuristics() -> list[DiscoveryHeuristic]:
     """
     Returns discovery heuristics for Python.
@@ -458,5 +474,13 @@ def get_discovery_heuristics() -> list[DiscoveryHeuristic]:
             ],
             weight=10,
             suspicious_params=["code", "data", "expr", "payload"],
+        ),
+        DiscoveryHeuristic(
+            category="Cryptography",
+            patterns=[
+                r".*(hashlib\.(md5|sha|new)|hmac\.new|secrets\..*|cryptography\..*|jwt\.(encode|decode)|passlib\..*|bcrypt\..*).*"
+            ],
+            weight=6,
+            suspicious_params=["password", "secret", "key", "token", "hash", "salt"],
         ),
     ]

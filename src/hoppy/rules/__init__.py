@@ -219,3 +219,18 @@ def get_discovery_heuristics(language: str | None = None) -> list[DiscoveryHeuri
     if language == "csharp":
         return csharp.get_discovery_heuristics()
     return []
+
+
+def get_barrier_heuristics(language: str | None = None) -> list[DiscoveryHeuristic]:
+    """
+    Returns authentication barrier heuristics for the specified language.
+    """
+    if language == "python":
+        return python.get_barrier_heuristics()
+    if language == "javascript":
+        return javascript.get_barrier_heuristics()
+    if language == "java":
+        return java.get_barrier_heuristics()
+    if language == "csharp":
+        return csharp.get_barrier_heuristics()
+    return []

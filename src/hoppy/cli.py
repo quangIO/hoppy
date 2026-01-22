@@ -1,4 +1,5 @@
 import os
+import re
 import shlex
 
 import typer
@@ -60,6 +61,11 @@ def scan(
             '(e.g. "--delombok-mode no-delombok --fetch-dependencies").'
         ),
     ),
+    use_cache: bool = typer.Option(
+        True,
+        "--cache/--no-cache",
+        help="Use cached CPG if available and source hasn't changed.",
+    ),
     surface_only: bool = typer.Option(
         False,
         "--surface-only",
@@ -99,11 +105,15 @@ def scan(
                 "javascript": "JSSRC",
             }
             extra_args = shlex.split(joern_parse_args) if joern_parse_args else None
-            analyzer.load_code(
+            res = analyzer.load_code(
                 abs_path,
                 language=lang_map.get(language.lower()) if language else None,
                 joern_parse_args=extra_args,
+                use_cache=use_cache,
             )
+            if not res:
+                console.print(f"[bold danger]Error loading code:[/bold danger] {res.failure()}")
+                raise typer.Exit(1)
 
         with console.status(
             "[bold info]Identifying Attack Surface[/bold info]",
@@ -366,10 +376,7 @@ def discover(
             param_display = ", ".join(param_strs)
             loc = f"{os.path.basename(w['file'])}:{w['line']}"
 
-            console.print(
-                f"[bold cyan]{w['name']}[/bold cyan] ({param_display}) "
-                f"[dim]{loc}[/dim]"
-            )
+            console.print(f"[bold cyan]{w['name']}[/bold cyan] ({param_display}) [dim]{loc}[/dim]")
 
             # Group calls by category
             cat_calls = {}
@@ -381,23 +388,38 @@ def discover(
 
             for cat, calls in sorted(cat_calls.items()):
                 calls_str = ", ".join(calls)
-                console.print(
-                    f"  ↳ [yellow]{cat}[/yellow]: calls {calls_str}"
-                )
+                console.print(f"  ↳ [yellow]{cat}[/yellow]: calls {calls_str}")
             console.print("")
+
 
 @app.command(name="call-graph")
 def call_graph_cmd(
     path: str = typer.Argument(".", help="Path to the source code."),
-    method: str | None = typer.Option(None, "--method", "-m", help="Full name of the starting method."),
-    pattern: str = typer.Option(".*", "--pattern", "-p", help="Pattern to match method names (if --method not specified)."),
+    method: str | None = typer.Option(
+        None, "--method", "-m", help="Full name of the starting method."
+    ),
+    pattern: str = typer.Option(
+        ".*", "--pattern", "-p", help="Pattern to match method names (if --method not specified)."
+    ),
     file_pattern: str = typer.Option(".*", "--file", "-f", help="Pattern to match file names."),
     direction: str = typer.Option(
         "callee", "--direction", "-d", help="Direction: 'caller' or 'callee'."
     ),
     depth: int = typer.Option(5, "--depth", help="Max depth for traversal."),
     exclude: list[str] | None = typer.Option(None, "--exclude", "-e", help="Patterns to exclude."),
+    include_external: str | None = typer.Option(
+        None, "--include-external", help="Pattern for external methods to include in the graph."
+    ),
     language: str | None = typer.Option(None, "--lang", "-l", help="Language filter."),
+    display_conditions: bool = typer.Option(
+        False, "--display-conditions", help="Show logical conditions (IF structures) guarding calls."
+    ),
+    backward_trace: bool = typer.Option(
+        False, "--backward-trace", help="Trace interesting sink arguments back to method parameters."
+    ),
+    summary: bool = typer.Option(
+        False, "--summary", help="Show a security overview table at the end."
+    ),
 ):
     """
     Displays call graphs starting from matching methods.
@@ -419,7 +441,9 @@ def call_graph_cmd(
         else:
             # Discover matching methods
             with console.status("[bold info]Finding matching methods...[/bold info]"):
-                res = analyzer.list_methods(pattern=pattern, file_pattern=file_pattern, internal_only=True)
+                res = analyzer.list_methods(
+                    pattern=pattern, file_pattern=file_pattern, internal_only=True
+                )
                 if not res:
                     console.print(f"[red]Failed to find methods: {res.failure()}[/red]")
                     return
@@ -429,12 +453,11 @@ def call_graph_cmd(
             console.print("[yellow]No matching methods found.[/yellow]")
             return
 
-        from .rules import get_discovery_heuristics
+        from .rules import AuthBarrier, get_discovery_heuristics
 
         heuristics = get_discovery_heuristics(language)
-        interesting = []
-        for h in heuristics:
-            interesting.extend(h.patterns)
+        barrier_pattern = AuthBarrier()
+        barrier_pred = barrier_pattern.to_cpg_predicate()
 
         # Default exclusions for standard libraries
         default_excludes = [
@@ -455,47 +478,144 @@ def call_graph_cmd(
         ]
         all_excludes = default_excludes + (exclude or [])
 
-        def print_node(node, current_depth=0, is_last=True, prefix=""):
+        # For security summary
+        security_findings = []
+
+        def print_node(node, current_depth=0, is_last=True, prefix="", root_method=None):
             connector = "└── " if is_last else "├── "
             color = "cyan" if current_depth == 0 else "white"
 
-            # Check if this node is interesting (matches a dangerous pattern)
-            import re
+            if current_depth == 0:
+                root_method = node["name"]
 
-            is_interesting = any(re.match(p, node["fullName"]) for p in interesting)
-            if is_interesting:
+            # Check if this node is interesting (matches a dangerous pattern)
+            category = node.get("category")
+            if category:
                 color = "yellow"
+                
+                # Use callerFile if the sink's own file is empty (common for external libraries)
+                location = node.get("file")
+                if not location or location == "<empty>":
+                    location = node.get("callerFile", "unknown")
+                
+                security_findings.append({
+                    "entry": root_method,
+                    "sink": node["name"],
+                    "category": category,
+                    "file": location
+                })
 
             label = f"[{color}]{node['name']}[/{color}] [dim]({node['fullName']})[/dim]"
-            if is_interesting:
-                label += " [bold yellow][CAP][/bold yellow]"
+            if category:
+                label += f" [bold yellow]\\[{category}][/bold yellow]"
+
+            # Display real barrier snippets
+            barriers = node.get("barriers")
+            if barriers:
+                cleaned = []
+                for b in barriers:
+                    c = re.sub(r"\s+", " ", b).strip()
+                    if len(c) > 60:
+                        c = c[:57] + "..."
+                    cleaned.append(c)
+                barrier_str = ", ".join(cleaned)
+                label += f" [bold green]\\[GUARD: {barrier_str}][/bold green]"
+
+            # Display traces
+            traces = node.get("traces")
+            if traces:
+                trace_lines = []
+                for t in traces:
+                    trace_lines.append(f"[bold magenta]    ↳ {t}[/bold magenta]")
+                label += "\n" + "\n".join([f"{prefix}│   {tl}" for tl in trace_lines])
+
+            # Display real inline conditions if requested
+            if display_conditions:
+                conditions = node.get("conditions")
+                if conditions:
+                    cleaned_conds = []
+                    for cond in conditions:
+                        c = re.sub(r"\s+", " ", cond).strip()
+                        if len(c) > 60:
+                            c = c[:57] + "..."
+                        cleaned_conds.append(c)
+                    cond_str = ", ".join(cleaned_conds)
+                    label += f" [bold blue]\\[IF: {cond_str}][/bold blue]"
 
             console.print(f"{prefix}{connector}{label}")
 
             new_prefix = prefix + ("    " if is_last else "│   ")
             children = node.get("children", [])
             for i, child in enumerate(children):
-                print_node(child, current_depth + 1, i == len(children) - 1, new_prefix)
+                print_node(child, current_depth + 1, i == len(children) - 1, new_prefix, root_method=root_method)
 
-        for m_name in start_methods:
+        barrier_heuristics = rules.get_barrier_heuristics(language)
+        with console.status("[bold info]Traversing call graphs...[/bold info]"):
             result = analyzer.get_call_graph(
-                m_name,
+                start_methods,
                 direction=direction,
                 depth=depth,
                 exclude_patterns=all_excludes,
-                interesting_patterns=interesting,
+                heuristics=heuristics,
+                barrier_heuristics=barrier_heuristics,
+                barrier_predicate=barrier_pred,
+                include_conditions=display_conditions,
+                include_backward_trace=backward_trace,
+                include_external_pattern=include_external,
             )
 
-            if not result or result.unwrap() is None:
-                continue
+        if not result:
+            console.print(f"[red]Failed to retrieve call graphs: {result.failure()}[/red]")
+            return
 
-            tree = result.unwrap()
-            # Omit methods that don't call anyone (or aren't called by anyone)
-            if not tree.get("children"):
+        trees = result.unwrap()
+
+        def count_interesting(node):
+            count = 1 if node.get("category") else 0
+            for child in node.get("children", []):
+                count += count_interesting(child)
+            return count
+
+        # Sort trees by number of interesting nodes (descending)
+        trees.sort(key=count_interesting, reverse=True)
+
+        for tree in trees:
+            if not tree or not tree.get("children"):
                 continue
 
             print_node(tree)
             console.print("")
+
+        if summary:
+            if security_findings:
+                from rich.tree import Tree
+                summary_tree = Tree("[bold magenta]Security Summary[/bold magenta]")
+                
+                # Group by Category -> Sink -> (Entry + File)
+                grouped = {}
+                for f in security_findings:
+                    cat = f["category"]
+                    sink = f["sink"]
+                    entry = f["entry"]
+                    loc = f["file"]
+                    
+                    if cat not in grouped:
+                        grouped[cat] = {}
+                    if sink not in grouped[cat]:
+                        grouped[cat][sink] = set()
+                    # Deduplicate entry points per sink
+                    grouped[cat][sink].add(f"{entry} [dim]({loc})[/dim]")
+
+                for cat, sinks in sorted(grouped.items()):
+                    cat_node = summary_tree.add(f"[bold yellow]{cat}[/bold yellow]")
+                    for sink, entries in sorted(sinks.items()):
+                        sink_node = cat_node.add(f"[bold red]{sink}[/bold red]")
+                        for entry_info in sorted(entries):
+                            sink_node.add(entry_info)
+                
+                console.print(summary_tree)
+            else:
+                console.print("[bold green]No dangerous sinks identified in the explored paths.[/bold green]")
 
 
 @app.command(name="list-methods")

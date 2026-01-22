@@ -413,6 +413,21 @@ def get_scan_rules(coverage: str = "precision") -> list[ScanRule]:
     return rules
 
 
+def get_barrier_heuristics() -> list[DiscoveryHeuristic]:
+    """
+    Returns authentication barrier heuristics for Java.
+    """
+    return [
+        DiscoveryHeuristic(
+            category="Auth Barrier",
+            patterns=[
+                r"(?i).*(PreAuthorize|Secured|RolesAllowed|RequiresAuthentication|RequiresPermissions|Authorize|Authenticated).*",
+                r"(?i).*(assertAuth|checkAuth|isAuthorized|isAuthenticated|hasPermission|verifyToken|validateUser).*",
+            ],
+        )
+    ]
+
+
 def get_discovery_heuristics() -> list[DiscoveryHeuristic]:
     """
     Returns discovery heuristics for Java.
@@ -470,5 +485,13 @@ def get_discovery_heuristics() -> list[DiscoveryHeuristic]:
             ],
             weight=10,
             suspicious_params=["code", "data", "expr", "payload"],
+        ),
+        DiscoveryHeuristic(
+            category="Cryptography",
+            patterns=[
+                r".*(java\.security\.MessageDigest\.getInstance|javax\.crypto\.Cipher\.getInstance|java\.security\.Signature\.getInstance|javax\.crypto\.KeyGenerator\.getInstance|javax\.crypto\.SecretKeyFactory\.getInstance|.*\.JWT\.create|.*\.Jwts\.builder).*"
+            ],
+            weight=6,
+            suspicious_params=["password", "secret", "key", "token", "hash", "salt"],
         ),
     ]

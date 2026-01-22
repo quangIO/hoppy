@@ -58,12 +58,14 @@ class Analyzer:
         path: str,
         language: str | None = None,
         joern_parse_args: list[str] | None = None,
+        use_cache: bool = True,
     ) -> Result[str, Exception]:
         """Import code into the analysis session."""
         return self.session.import_code(
             path,
             language=language,
             joern_parse_args=joern_parse_args,
+            use_cache=use_cache,
         )
 
     def build_cpg(self, src_path: str, out_path: str):
@@ -79,7 +81,19 @@ class Analyzer:
             if os.path.exists(joern_parse_path):
                 joern_parse_cmd = joern_parse_path
 
-        subprocess.run([joern_parse_cmd, src_path, "--output", out_path], check=True)
+        import tempfile
+        with tempfile.TemporaryFile() as tmp:
+            try:
+                subprocess.run(
+                    [joern_parse_cmd, src_path, "--output", out_path],
+                    stdout=tmp,
+                    stderr=subprocess.STDOUT,
+                    check=True
+                )
+            except subprocess.CalledProcessError:
+                tmp.seek(0)
+                error_msg = tmp.read().decode("utf-8", errors="ignore")
+                raise RuntimeError(f"joern-parse failed:\n{error_msg}")
 
     def load_cpg(self, path: str) -> Result[str, Exception]:
         """Load a CPG from a file."""
@@ -187,10 +201,15 @@ class Analyzer:
         esc_pattern = json.dumps(pattern)[1:-1]
         esc_file = json.dumps(file_pattern)[1:-1]
         internal_filter = " && !m.isExternal" if internal_only else ""
+        # Exclude lambdas and :program from starting points to reduce noise.
+        # :program is usually a redundant container for scripts that have other methods.
+        extra_filter = (
+            ' && !m.name.contains("lambda") && m.name != ":program"' if internal_only else ""
+        )
         scala = (
             f'ujson.Arr(cpg.method.filter(m => (m.name.matches("{esc_pattern}") || '
             f'm.fullName.matches("{esc_pattern}")) && '
-            f'm.filename.matches("{esc_file}"){internal_filter} && '
+            f'm.filename.matches("{esc_file}"){internal_filter}{extra_filter} && '
             f'!m.name.startsWith("<operator>") && '
             f'!m.fullName.startsWith("<operator>") && '
             f'!m.fullName.contains("\\n") && '
@@ -531,93 +550,221 @@ class Analyzer:
             .bind(self.session._parse_json_result)
             .bind(self._ensure_list)
         )
-
     def get_call_graph(
         self,
-        method_name: str,
+        method_names: list[str],
         direction: str = "callee",
         depth: int = 5,
         exclude_patterns: list[str] | None = None,
-        interesting_patterns: list[str] | None = None,
-    ) -> Result[dict[str, Any], Exception]:
+        heuristics: list["DiscoveryHeuristic"] | None = None,
+        barrier_heuristics: list["DiscoveryHeuristic"] | None = None,
+        barrier_predicate: str | None = None,
+        include_conditions: bool = False,
+        include_backward_trace: bool = False,
+        include_external_pattern: str | None = None,
+    ) -> Result[list[dict[str, Any]], Exception]:
         """
-        Retrieves a call graph (tree) starting from a specific method.
+        Retrieves call graphs (trees) starting from multiple methods.
         """
         import json
 
-        esc_method = json.dumps(method_name)[1:-1]
+        methods_json = json.dumps(method_names)
         exclude_json = json.dumps(exclude_patterns or [])
-        interesting_json = json.dumps(interesting_patterns or [])
+        heuristics_json = json.dumps(
+            [
+                {"category": h.category, "patterns": h.patterns}
+                for h in (heuristics or [])
+            ]
+        )
+        barriers_json = json.dumps(
+            [
+                {"category": h.category, "patterns": h.patterns}
+                for h in (barrier_heuristics or [])
+            ]
+        )
+        # Default to a predicate that matches nothing if not provided
+        barrier_pred = barrier_predicate or "((_: nodes.StoredNode) => false)"
+        display_conds_scala = "true" if include_conditions else "false"
+        include_trace_scala = "true" if include_backward_trace else "false"
+        include_ext_scala = json.dumps(include_external_pattern) if include_external_pattern else '""'
 
         scala = f"""
         import io.shiftleft.codepropertygraph.generated.nodes
         import io.shiftleft.semanticcpg.language._
+        import io.joern.dataflowengineoss.language._
         import ujson._
 
+        val startMethodsList = ujson.read(\"\"\"{methods_json}\"\"\").arr.map(_.str).l
         val excludeList = ujson.read(\"\"\"{exclude_json}\"\"\").arr.map(_.str).l
-        val interestingList = ujson.read(\"\"\"{interesting_json}\"\"\").arr.map(_.str).l
+        val heuristics = ujson.read(\"\"\"{heuristics_json}\"\"\").arr
+        val barrierHeuristics = ujson.read(\"\"\"{barriers_json}\"\"\").arr
+        val isAuthBarrier = {barrier_pred}
+        val includeConditions = {display_conds_scala}
+        val includeTrace = {include_trace_scala}
+        val includeExternalPattern = {include_ext_scala}
+
+        def getBarriers(m: nodes.Method): List[String] = {{
+          if (isAuthBarrier(m)) {{
+             val fromAnnotation = (m.start.annotation ++ m.typeDecl.annotation).filter(a => 
+                barrierHeuristics.exists(_.obj("patterns").arr.map(_.str).exists(p => a.name.matches(p)))
+             ).code.l
+
+             val fromCalls = m.call.filter(c => 
+                barrierHeuristics.exists(_.obj("patterns").arr.map(_.str).exists(p => c.methodFullName.matches(p) || c.name.matches(p)))
+             ).code.l
+             
+             if (fromAnnotation.nonEmpty || fromCalls.nonEmpty) {{
+                (fromAnnotation ++ fromCalls).distinct
+             }} else if (m.name.toLowerCase.matches(".*(auth|login|verify|perm|authorize|secure).*")) {{
+                List(m.name)
+             }} else {{
+                List.empty
+             }}
+          }} else List.empty
+        }}
 
         def isExcluded(name: String): Boolean = {{
           excludeList.exists(p => name.matches(p))
         }}
 
-        def isInteresting(name: String): Boolean = {{
-          interestingList.exists(p => name.matches(p))
+        def getCategory(name: String): Option[String] = {{
+          heuristics.find {{ h =>
+            h.obj("patterns").arr.map(_.str).exists(p => name.matches(p))
+          }}.map(_.obj("category").str)
         }}
 
         def buildTree(
             curr: nodes.Method,
             currentDepth: Int,
-            visited: Set[String]
+            visited: Set[String],
+            activeBarriers: List[String],
+            callerFile: String = ""
         ): ujson.Obj = {{
           val fullName = curr.fullName
           val node = ujson.Obj(
             "name" -> curr.name,
             "fullName" -> fullName,
             "file" -> curr.filename,
+            "callerFile" -> callerFile,
             "line" -> curr.lineNumber.getOrElse(-1)
           )
+
+          val category = getCategory(fullName)
+          if (category.isDefined) {{
+             node("category") = category.get
+          }}
+
+          // Identify barriers on the current method node
+          val currentBarriers = getBarriers(curr)
+
+          if (currentBarriers.nonEmpty) {{
+             node("barriers") = ujson.Arr(currentBarriers.map(ujson.Str(_))*)
+          }} else if (activeBarriers.nonEmpty) {{
+             node("isDominated") = true
+          }}
 
           if (currentDepth >= {depth} || visited.contains(fullName)) {{
              node("children") = ujson.Arr()
              return node
           }}
 
-          val nextVisited = visited + fullName
+          var localVisited = visited + fullName
+          val nextActiveBarriers = if (currentBarriers.nonEmpty) currentBarriers else activeBarriers
 
-          val nextMethods = if ("{direction}" == "callee") {{
-             curr.call.filter(c => !c.name.startsWith("<operator>"))
-               .flatMap(_.callee).filter(m => !isExcluded(m.fullName)).distinct.l
-          }} else {{
-             curr.callIn.method.filter(m => !isExcluded(m.fullName)).distinct.l
+          def expand(m: nodes.Method, expVisited: Set[String]): List[(nodes.Method, List[String], List[String])] = {{
+             if ("{direction}" == "caller") {{
+                return m.callIn.method.filter(x => !isExcluded(x.fullName)).distinct.l.map(x => (x, List.empty, List.empty))
+             }}
+
+             val directCalls = m.call.filter(c => !c.name.startsWith("<operator>") || c.name == "<operator>.new").l
+             
+             directCalls.flatMap {{ c =>
+                val directTargets = (c.callee.l ++ c.argument.isMethodRef.referencedMethod.l)
+                val targets = directTargets.flatMap {{ m =>
+                  if (m.isExternal && includeExternalPattern.nonEmpty && m.fullName.matches(includeExternalPattern)) {{
+                    val parts = m.fullName.split(":")
+                    if (parts.length >= 2) {{
+                       val className = parts(parts.length - 2)
+                       val methodName = parts.last
+                       val internalMatches = cpg.method.isExternal(false).nameExact(methodName).fullName(s".*${{className}}:${{methodName}}").l
+                       if (internalMatches.nonEmpty) internalMatches else List(m)
+                    }} else {{
+                       val internalMatches = cpg.method.isExternal(false).nameExact(m.name).l
+                       if (internalMatches.nonEmpty) internalMatches else List(m)
+                    }}
+                  }} else List(m)
+                }}.filter(x => !isExcluded(x.fullName)).distinct.l
+                
+                // Only query conditions if requested to save performance
+                val conditions = if (includeConditions) {{
+                    c.start.controlledBy.code.l
+                      .filter(cond => !cond.contains("_iterator") && !cond.contains("_result") && !cond.contains(".next()") && cond.length < 100)
+                      .distinct
+                }} else List.empty
+
+                targets.flatMap {{ t =>
+                   val tCategory = getCategory(t.fullName)
+                   
+                   val traces = if (includeTrace && tCategory.isDefined) {{
+                      // Trace arguments (index > 0) to method parameters, filtering out noise
+                      val noisy = Set("this", "self", "resolve", "reject", "callback", "cb", "next", "res", "req", "ctx")
+                      c.argument.filter(a => a.argumentIndex > 0 && !a.isInstanceOf[nodes.Literal]).flatMap {{ arg =>
+                         arg.start.reachableByFlows(m.parameter).map(_.elements.head).code
+                           .filterNot(s => noisy.contains(s.toLowerCase) || s.contains("this."))
+                           .distinct.l.map(s => s"arg: ${{arg.code}} <- param: $s")
+                      }}.l.distinct
+                   }} else List.empty
+
+                   if ((t.name.contains("lambda") || t.name == ":program") && !expVisited.contains(t.fullName)) {{
+                      expand(t, expVisited + t.fullName).map {{ case (em, ec, et) => (em, (conditions ++ ec).distinct, (traces ++ et).distinct) }}
+                   }} else {{
+                      List((t, conditions, traces))
+                   }}
+                }}
+             }}
           }}
 
-          val children = nextMethods.flatMap {{ m =>
-             // Pruning: if we are going deep, only keep paths that are "interesting"
-             // or lead to something interesting (heuristic: if it's not external, keep it)
-             val shouldKeep = if (interestingList.nonEmpty) {{
-                isInteresting(m.fullName) || !m.isExternal
+          val childrenData = expand(curr, localVisited)
+
+          // Group by target fullName to merge conditions and traces from multiple call sites
+          val children = childrenData.groupBy(_._1.fullName).map {{ case (fn, datas) =>
+             val m = datas.head._1
+             val mergedConditions = datas.flatMap(_._2).distinct
+             val mergedTraces = datas.flatMap(_._3).distinct
+
+             val mCategory = getCategory(m.fullName)
+             val shouldKeep = if (heuristics.nonEmpty) {{
+                mCategory.isDefined || !m.isExternal || (includeExternalPattern.nonEmpty && m.fullName.matches(includeExternalPattern))
              }} else true
 
              if (shouldKeep) {{
-                Some(buildTree(m, currentDepth + 1, nextVisited))
+                val childNode = buildTree(m, currentDepth + 1, localVisited, nextActiveBarriers, curr.filename)
+                if (mergedConditions.nonEmpty) {{
+                   childNode("conditions") = ujson.Arr(mergedConditions.map(ujson.Str(_))*)
+                }}
+                if (mergedTraces.nonEmpty) {{
+                   childNode("traces") = ujson.Arr(mergedTraces.map(ujson.Str(_))*)
+                }}
+                Some(childNode)
              }} else None
-          }}
+          }}.flatten.toList.sortBy(_.obj("name").str)
 
           node("children") = ujson.Arr(children*)
           node
         }}
 
-        val startMethod = cpg.method.fullName("{esc_method}").headOption
-        startMethod match {{
-          case Some(m) => buildTree(m, 0, Set.empty)
-          case None => ujson.Null
+        val results = startMethodsList.flatMap {{ mName =>
+          cpg.method.fullNameExact(mName).headOption.map {{ m =>
+            buildTree(m, 0, Set.empty, List.empty, m.filename)
+          }}
         }}
+
+        ujson.Arr(results*)
         """
         return (
             self.session.run_scala(scala)
             .bind(self.session._parse_json_result)
-            .map(lambda r: cast(dict[str, Any], r))
+            .bind(self._ensure_list)
         )
 
     def _group_api_summary(self, fullnames: list[str]) -> dict[str, list[str]]:
