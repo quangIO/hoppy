@@ -402,6 +402,7 @@ class Method(Pattern):
     name: str | None = None
     fullname: str | None = None
     annotation: str | None = None
+    parameter: str | None = None
 
     def to_cpg(self) -> str:
         q = "cpg.method"
@@ -412,6 +413,8 @@ class Method(Pattern):
 
         if self.annotation:
             q += f'.where(_.annotation.name("{_esc(self.annotation)}"))'
+        if self.parameter:
+            q += f'.where(_.parameter.name("{_esc(self.parameter)}"))'
         return q
 
     def to_cpg_traversal(self) -> str:
@@ -423,6 +426,8 @@ class Method(Pattern):
 
         if self.annotation:
             q += f'.where(_.annotation.name("{_esc(self.annotation)}"))'
+        if self.parameter:
+            q += f'.where(_.parameter.name("{_esc(self.parameter)}"))'
         return q
 
     def to_scala_predicate(self, node_var: str) -> str:
@@ -440,6 +445,11 @@ class Method(Pattern):
                 f'm.start.annotation.name.filter(_.matches("{_esc(self.annotation)}")).nonEmpty || '
                 f'm.start.typeDecl.annotation.name.filter(_.matches("{_esc(self.annotation)}")).nonEmpty'
                 f")"
+            )
+
+        if self.parameter:
+            filters.append(
+                f'm.start.parameter.name.filter(_.matches("{_esc(self.parameter)}")).nonEmpty'
             )
 
         if not filters:

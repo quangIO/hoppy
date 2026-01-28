@@ -312,10 +312,17 @@ class JoernSession:
         """Sends a command to the server and returns the raw output."""
         start_time = time.time()
         try:
+            timeout_s = 120
+            timeout_env = os.getenv("HOPPY_JOERN_TIMEOUT")
+            if timeout_env:
+                try:
+                    timeout_s = max(1, int(timeout_env))
+                except ValueError:
+                    timeout_s = 120
             response = requests.post(
                 f"{self.server_url}/query-sync",
                 json={"query": cmd},
-                timeout=120,
+                timeout=timeout_s,
             )
             response.raise_for_status()
             data = response.json()
@@ -339,6 +346,7 @@ class JoernSession:
         use_cache: bool = True,
     ) -> Result[str, Exception]:
         from .cache import CpgCache
+
         abs_path = os.path.abspath(path)
         self.run_scala("workspace.projects.foreach(p => close(p.name))")
 
@@ -349,7 +357,7 @@ class JoernSession:
                 logger.info(f"Using cached CPG for {abs_path}")
                 return self.load_cpg(cached_path)
 
-        # For everything we want to cache, we prefer using joern-parse 
+        # For everything we want to cache, we prefer using joern-parse
         # because it's a standalone tool that produces a solid CPG file.
         if use_cache or os.path.isdir(abs_path) or joern_parse_args:
             return self._import_with_joern_parse(
@@ -369,7 +377,7 @@ class JoernSession:
         self,
         abs_path: str,
         language: str | None,
-        joern_parse_args: list[str],
+        joern_parse_args: list[str] | None,
         use_cache: bool = True,
     ) -> Result[str, Exception]:
         if self._explicit_server:
@@ -416,17 +424,20 @@ class JoernSession:
             except subprocess.CalledProcessError as e:
                 # On failure, read the log and raise a more descriptive error
                 if os.path.exists(log_path):
-                    with open(log_path, "r") as f:
+                    with open(log_path) as f:
                         log_content = f.read()
-                    raise RuntimeError(f"joern-parse failed with exit code {e.returncode}:\n{log_content}") from e
+                    raise RuntimeError(
+                        f"joern-parse failed with exit code {e.returncode}:\n{log_content}"
+                    ) from e
                 raise
-        
+
         res = self.send_command(f'importCpg("{output_path}")').map(self._report_import_status)
-        
+
         if use_cache and isinstance(res, Success):
             from .cache import CpgCache
+
             CpgCache().put(abs_path, output_path, language=language, joern_args=joern_parse_args)
-            
+
         return res
 
     def _parse_workspace(self) -> str:

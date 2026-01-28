@@ -477,6 +477,12 @@ When working with Joern and the Hoppy DSL, follow these principles to avoid "bli
 
 ## Debugging
 
+### Session Learnings (2025-xx-xx)
+- Enable targeted debug logs before guessing. Add a flag (e.g., `HOPPY_DEBUG_ROUTES=1`) that prints counts, samples, and raw Joern errors.
+- When Scala returns empty results, check for compilation/runtime errors in raw output (invalid regex escapes, missing defs, or scope errors).
+- Express call patterns in JS often have `<unknownFullName>`; resolve by `call.name` and include nested lambdas from the callee AST.
+- Router mounts may require file-based linkage (e.g., `app.use('/x', dataErasure)` and `router.get` in `routes/dataErasure.ts`).
+
 ### Print Generated Scala
 ```python
 q = Query.source(Call(name="target"))

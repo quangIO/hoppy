@@ -19,10 +19,12 @@ def WebSource(var_name: str = "$IN") -> Pattern:
     Matches untrusted web inputs for JavaScript (Express/Koa).
     """
     request_fields = "body|query|params|headers|cookies|files"
+    destructured_param = r"param\\d+_\\d+"
     base_source = Identifier(name="req").field(request_fields) | Identifier(name="request").field(
         request_fields
     )
     ctx_source = Identifier(name="ctx").field("request|query|params|headers|state|body")
+    destructured_base = Field(receiver=Identifier(name=destructured_param), name=request_fields)
 
     return Or(
         [
@@ -31,6 +33,8 @@ def WebSource(var_name: str = "$IN") -> Pattern:
             Field(receiver=base_source, name=".*"),
             ctx_source,
             Field(receiver=ctx_source, name=".*"),
+            destructured_base,
+            Field(receiver=destructured_base, name=".*"),
             Parameter(name=var_name).inside(Controller()),
         ]
     )
@@ -71,10 +75,24 @@ def RequestUrlSource() -> Pattern:
 
 def Controller() -> Pattern:
     """
-    Matches web controller methods in JavaScript/TypeScript (NestJS, etc.).
+    Matches web controller methods in JavaScript/TypeScript (Express, Koa, NestJS, etc.).
     """
-    http_decorators = r"(?i)(get|post|put|delete|patch|options|head|all)"
-    return Method(annotation=http_decorators)
+    http_decorators = r"(?i)^(get|post|put|delete|patch|options|head|all)$"
+    request_fields = r"^(body|query|params|headers|cookies|files)$"
+    destructured_param = r"^param\\d+_\\d+$"
+    req_param = r"^(req|request)$"
+    res_param = r"^(res|response|next)$"
+    return Or(
+        [
+            Method(annotation=http_decorators),
+            Method(parameter=req_param).where(Method(parameter=res_param)),
+            Method(parameter=request_fields).where(Method(parameter=res_param)),
+            Method(name="<lambda>.*", parameter=destructured_param).where(
+                Method(parameter=res_param)
+            ),
+            Method(parameter="^ctx$").where(Method(parameter="^next$")),
+        ]
+    )
 
 
 def AuthBarrier() -> Pattern:
@@ -85,7 +103,10 @@ def AuthBarrier() -> Pattern:
     return Or(
         [
             Call(
-                fullname=r".*(auth|authenticate|authorize|verifyToken|isAuthenticated|requireAuth).*"
+                fullname=(
+                    r".*(auth|authenticate|authorize|verifyToken|verify|isAuthenticated|"
+                    r"requireAuth|security\.).*"
+                )
             ),
             Method(annotation=guard_decorators),
         ]
@@ -530,7 +551,8 @@ def get_barrier_heuristics() -> list[DiscoveryHeuristic]:
             category="Auth Barrier",
             patterns=[
                 r"(?i).*(UseGuards|AuthGuard|JwtAuthGuard|Roles|RoleGuard|PermissionGuard).*",
-                r"(?i).*(auth|authenticate|authorize|verifyToken|isAuthenticated|requireAuth).*",
+                r"(?i).*(auth|authenticate|authorize|verifyToken|verify|isAuthenticated|"
+                r"requireAuth|security\.).*",
             ],
         )
     ]
@@ -552,7 +574,16 @@ def get_discovery_heuristics() -> list[DiscoveryHeuristic]:
         DiscoveryHeuristic(
             category="Database",
             patterns=[
-                ".*(sequelize.*[:\\.]query|knex.*[:\\.](raw|whereRaw)|pg.*[:\\.]query|mysql.*[:\\.]query|mariadb.*[:\\.]query|sqlite3.*[:\\.](all|get|run)|typeorm.*[:\\.]query|prisma.*[:\\.]\\$(queryRaw|executeRaw)).*"
+                # Direct DB Drivers / ORMs
+                r".*(sequelize.*[:\.]query|knex.*[:\.](raw|whereRaw)|pg.*[:\.]query|mysql.*[:\.]query|mariadb.*[:\.]query|sqlite3.*[:\\.](all|get|run)|typeorm.*[:\.]query|prisma.*[:\.]\$(queryRaw|executeRaw)).*",
+                # Caching (Redis, Memcached, etc.)
+                r".*(Cache|Redis|Memcached|Store).*[:\\.](set|put|add|save|get|fetch|retrieve|del|delete|has).*",
+                # Transactions & Connection Lifecycle
+                r".*(DataSource|TransactionManager|QueryRunner|UnitOfWork|EntityManager|Connection).*[:\\.](commit|rollback|start|begin|connect|open|release|initialize|close|destroy|createQueryRunner|getRepository|createQueryBuilder|manager).*",
+                r".*[:\\.](startTransaction|beginTransaction|commitTransaction|rollbackTransaction|initialize|connect|release)$",
+                # Query Builders / Repositories
+                r".*(QueryBuilder|Criteria|Repository).*[:\\.](getMany|getManyAndCount|findAndCount|paginate|toList|fetchAll|execute|save|remove|delete|insert|update|count|findOne|find).*",
+                r".*[:\\.](getMany|getManyAndCount|findAndCount|createQueryBuilder)$",
             ],
             weight=9,
             suspicious_params=["sql", "query", "table", "where"],
@@ -560,7 +591,8 @@ def get_discovery_heuristics() -> list[DiscoveryHeuristic]:
         DiscoveryHeuristic(
             category="File System",
             patterns=[
-                ".*fs.*[:\\.](readFile|readFileSync|writeFile|writeFileSync|createReadStream|createWriteStream|unlink|readdir|readdirSync|mkdir|mkdirSync|rmdir|rmdirSync|open|openSync).*"
+                r".*fs.*[:\\.](readFile|readFileSync|writeFile|writeFileSync|createReadStream|createWriteStream|unlink|readdir|readdirSync|mkdir|mkdirSync|rmdir|rmdirSync|open|openSync).*",
+                r"(^|[:\\.])(readFile|readFileSync|writeFile|writeFileSync|createReadStream|createWriteStream|unlink|readdir|readdirSync|mkdir|mkdirSync|rmdir|rmdirSync|open|openSync|pdfParse)$",
             ],
             weight=7,
             suspicious_params=["path", "filename", "filepath", "dest", "src"],
@@ -568,7 +600,12 @@ def get_discovery_heuristics() -> list[DiscoveryHeuristic]:
         DiscoveryHeuristic(
             category="Network",
             patterns=[
-                r".*(axios($|[:\.](get|post|put|delete|head|options|request))|fetch|node-fetch|http.*[:\.](get|request)|https.*[:\.](get|request)|(^|[:\.])request($|[:\.].*)|superagent[:\.].*|got[:\.].*).*"
+                # Direct HTTP Clients
+                r".*(axios($|[:\\.](get|post|put|delete|head|options|request))|fetch|node-fetch|http.*[:\\.](get|request)|https.*[:\\.](get|request)|(^|[:\\.])request($|[:\\.].*)|superagent[:\\.].*|got[:\\.].*).*",
+                r"(^|[:\\.])(AxiosInstance|Request|Response|Client|req|res|ctx)[:\\.](get|post|put|delete|patch|request|send)$",
+                # Architectural Boundaries (Gateways, Proxies, Clients)
+                r".*(Gateway|Connector|Adapter|Client|Consumer|Fetcher|Proxy|GatewayService|ClientService).*[:\\.](upload|send|push|sign|process|verify|cancel|revoke|delete|get|fetch|find|request|call).*",
+                r".*DigitalSign.*[:\\.](sign|verify|process).*",
             ],
             weight=8,
             suspicious_params=["url", "host", "uri", "endpoint"],

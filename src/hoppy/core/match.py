@@ -186,6 +186,21 @@ class Match(BaseModel):
                 return ".".join(parts)
             return parts[-1] if parts else "<unknown>"
 
+        # Special handling for JS/TS generic program wrappers
+        if full.endswith("::program"):
+            base = full.replace("::program", "")
+            if "/" in base or "\\" in base:
+                base = base.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+            return os.path.splitext(base)[0]
+        if full == "program":
+            # Try to get it from filename
+            if self.file:
+                base = self.file
+                if "/" in base or "\\" in base:
+                    base = base.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+                return os.path.splitext(base)[0]
+            return "program"
+
         # If the type name seems to include the method name (common in some
         # Joern frontends fallbacks)
         # we try to strip it if it's redundant with method_name

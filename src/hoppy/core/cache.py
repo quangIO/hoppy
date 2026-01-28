@@ -3,6 +3,7 @@ import os
 import shutil
 from pathlib import Path
 
+
 def get_directory_fingerprint(path: str) -> str:
     """
     Generates a fingerprint for a directory based on file names, sizes, and modification times.
@@ -18,14 +19,14 @@ def get_directory_fingerprint(path: str) -> str:
 
     # For directories, we list all files and their stats
     files_info = []
-    # Using a limited depth or ignoring common noise might be good, 
+    # Using a limited depth or ignoring common noise might be good,
     # but for now let's keep it simple.
     for root, dirs, files in os.walk(path):
         # Sort to ensure stable fingerprint
         dirs.sort()
         files.sort()
-        
-        # Skip hidden and ignored directories if needed, 
+
+        # Skip hidden and ignored directories if needed,
         # but let's just use what's there for now.
         if ".git" in dirs:
             dirs.remove(".git")
@@ -44,6 +45,7 @@ def get_directory_fingerprint(path: str) -> str:
 
     return hashlib.md5("\n".join(files_info).encode()).hexdigest()
 
+
 class CpgCache:
     def __init__(self, cache_dir: str | None = None):
         if cache_dir:
@@ -51,29 +53,41 @@ class CpgCache:
         else:
             # Default to ~/.hoppy/cache
             self.cache_root = Path.home() / ".hoppy" / "cache"
-        
+
         self.cache_root.mkdir(parents=True, exist_ok=True)
 
-    def get_cpg_path(self, source_path: str, language: str | None = None, joern_args: list[str] | None = None) -> Path:
+    def get_cpg_path(
+        self, source_path: str, language: str | None = None, joern_args: list[str] | None = None
+    ) -> Path:
         fingerprint = get_directory_fingerprint(source_path)
         # Include language and args in the key to avoid collisions
         key_parts = [fingerprint, language or "any"]
         if joern_args:
             key_parts.append("-".join(sorted(joern_args)))
-        
+
         key = hashlib.md5(":".join(key_parts).encode()).hexdigest()
         return self.cache_root / f"{key}.cpg.bin.zip"
 
-    def has(self, source_path: str, language: str | None = None, joern_args: list[str] | None = None) -> bool:
+    def has(
+        self, source_path: str, language: str | None = None, joern_args: list[str] | None = None
+    ) -> bool:
         return self.get_cpg_path(source_path, language, joern_args).exists()
 
-    def get(self, source_path: str, language: str | None = None, joern_args: list[str] | None = None) -> str | None:
+    def get(
+        self, source_path: str, language: str | None = None, joern_args: list[str] | None = None
+    ) -> str | None:
         path = self.get_cpg_path(source_path, language, joern_args)
         if path.exists():
             return str(path)
         return None
 
-    def put(self, source_path: str, cpg_bin_path: str, language: str | None = None, joern_args: list[str] | None = None):
+    def put(
+        self,
+        source_path: str,
+        cpg_bin_path: str,
+        language: str | None = None,
+        joern_args: list[str] | None = None,
+    ):
         target_path = self.get_cpg_path(source_path, language, joern_args)
         shutil.copy2(cpg_bin_path, target_path)
         return str(target_path)

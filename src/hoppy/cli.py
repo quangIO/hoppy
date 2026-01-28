@@ -407,18 +407,32 @@ def call_graph_cmd(
     ),
     depth: int = typer.Option(5, "--depth", help="Max depth for traversal."),
     exclude: list[str] | None = typer.Option(None, "--exclude", "-e", help="Patterns to exclude."),
-    include_external: str | None = typer.Option(
-        None, "--include-external", help="Pattern for external methods to include in the graph."
+    include_external: str = typer.Option(
+        ".*", "--include-external", help="Pattern for external methods to include in the graph."
     ),
     language: str | None = typer.Option(None, "--lang", "-l", help="Language filter."),
     display_conditions: bool = typer.Option(
-        False, "--display-conditions", help="Show logical conditions (IF structures) guarding calls."
+        False,
+        "--display-conditions",
+        help="Show logical conditions (IF structures) guarding calls.",
     ),
     backward_trace: bool = typer.Option(
-        False, "--backward-trace", help="Trace interesting sink arguments back to method parameters."
+        False,
+        "--backward-trace",
+        help="Trace interesting sink arguments back to method parameters.",
     ),
     summary: bool = typer.Option(
         False, "--summary", help="Show a security overview table at the end."
+    ),
+    entry_only: bool = typer.Option(
+        False,
+        "--entry-only",
+        help="Only start from methods with 0 in-degree (potential entry points).",
+    ),
+    interesting_only: bool = typer.Option(
+        False,
+        "--interesting-only",
+        help="Only show paths that lead to an interesting capability (sink).",
     ),
 ):
     """
@@ -442,7 +456,10 @@ def call_graph_cmd(
             # Discover matching methods
             with console.status("[bold info]Finding matching methods...[/bold info]"):
                 res = analyzer.list_methods(
-                    pattern=pattern, file_pattern=file_pattern, internal_only=True
+                    pattern=pattern,
+                    file_pattern=file_pattern,
+                    internal_only=True,
+                    entry_points_only=entry_only,
                 )
                 if not res:
                     console.print(f"[red]Failed to find methods: {res.failure()}[/red]")
@@ -459,7 +476,7 @@ def call_graph_cmd(
         barrier_pattern = AuthBarrier()
         barrier_pred = barrier_pattern.to_cpg_predicate()
 
-        # Default exclusions for standard libraries
+        # Default exclusions for standard libraries and noisy APIs
         default_excludes = [
             r"java\..*",
             r"javax\..*",
@@ -475,6 +492,54 @@ def call_graph_cmd(
             r"axios\..*",
             r"fs\..*",
             r"path\..*",
+            r"mongoose\..*",
+            r"express\..*",
+            r"express-validator\..*",
+            r"lodash\..*",
+            r"moment\..*",
+            r"date-fns\..*",
+            r"uuid\..*",
+            r"react\..*",
+            r"__ecma\..*",
+            r"Number",
+            r"String",
+            r"Boolean",
+            r"Array",
+            r"Object",
+            r"Date.*",
+            r"Promise.*",
+            r".*status",
+            r".*json",
+            r".*next",
+            r".*log",
+            r"debug",
+            r"info",
+            r"warn",
+            r"error",
+            r"console\..*",
+            r"<operator>.*",
+            # Common DB / Mongoose operations
+            r".*findById.*",
+            r".*findOneAndUpdate.*",
+            r".*findByIdAndUpdate.*",
+            r".*findOne.*",
+            r".*find",
+            r".*save",
+            r".*create",
+            r".*delete.*",
+            r".*update.*",
+            r".*insert.*",
+            # Common utils
+            r".*v4",
+            r".*toLocaleLowerCase",
+            r".*toLocaleUpperCase",
+            r".*padStart",
+            r".*basename",
+            r".*dirname",
+            r".*existsSync",
+            r".*from",  # Buffer.from
+            r".*startOfDay",
+            # Generic HTTP / API noise
         ]
         all_excludes = default_excludes + (exclude or [])
 
@@ -492,18 +557,20 @@ def call_graph_cmd(
             category = node.get("category")
             if category:
                 color = "yellow"
-                
+
                 # Use callerFile if the sink's own file is empty (common for external libraries)
                 location = node.get("file")
                 if not location or location == "<empty>":
                     location = node.get("callerFile", "unknown")
-                
-                security_findings.append({
-                    "entry": root_method,
-                    "sink": node["name"],
-                    "category": category,
-                    "file": location
-                })
+
+                security_findings.append(
+                    {
+                        "entry": root_method,
+                        "sink": node["name"],
+                        "category": category,
+                        "file": location,
+                    }
+                )
 
             label = f"[{color}]{node['name']}[/{color}] [dim]({node['fullName']})[/dim]"
             if category:
@@ -546,8 +613,41 @@ def call_graph_cmd(
 
             new_prefix = prefix + ("    " if is_last else "│   ")
             children = node.get("children", [])
-            for i, child in enumerate(children):
-                print_node(child, current_depth + 1, i == len(children) - 1, new_prefix, root_method=root_method)
+
+            # Group children by name to detect polymorphism/ambiguity
+            from collections import defaultdict
+
+            grouped_children = defaultdict(list)
+            for c in children:
+                grouped_children[c["name"]].append(c)
+
+            # Sort names for deterministic output
+            sorted_names = sorted(grouped_children.keys())
+
+            for i, name in enumerate(sorted_names):
+                variants = grouped_children[name]
+                is_last_child = i == len(sorted_names) - 1
+                child_connector = "└── " if is_last_child else "├── "
+
+                if len(variants) > 5:
+                    # Collapse multiple variants
+                    collapse_label = (
+                        f"[white]{name}[/white] [dim]({len(variants)} variants - collapsed)[/dim]"
+                    )
+                    console.print(f"{new_prefix}{child_connector}{collapse_label}")
+                else:
+                    # Print each variant individually
+                    for j, variant in enumerate(variants):
+                        # If there are multiple variants but <= 5, we print them all.
+                        # We need to adjust is_last for the recursive call if it's part of a group.
+                        is_last_in_group = (j == len(variants) - 1) and is_last_child
+                        print_node(
+                            variant,
+                            current_depth + 1,
+                            is_last_in_group,
+                            new_prefix,
+                            root_method=root_method,
+                        )
 
         barrier_heuristics = rules.get_barrier_heuristics(language)
         with console.status("[bold info]Traversing call graphs...[/bold info]"):
@@ -576,6 +676,35 @@ def call_graph_cmd(
                 count += count_interesting(child)
             return count
 
+        def filter_interesting(node):
+            """Recursively filter nodes to only keep those that have
+            or lead to an interesting category."""
+            if not node:
+                return None
+
+            # Recursively filter children
+            new_children = []
+            for child in node.get("children", []):
+                filtered_child = filter_interesting(child)
+                if filtered_child:
+                    new_children.append(filtered_child)
+
+            # If this node has a category OR has interesting children, keep it
+            if node.get("category") or new_children:
+                node["children"] = new_children
+                return node
+
+            return None
+
+        # Apply filtering if interesting_only is set
+        if interesting_only:
+            filtered_trees = []
+            for tree in trees:
+                filtered = filter_interesting(tree)
+                if filtered:
+                    filtered_trees.append(filtered)
+            trees = filtered_trees
+
         # Sort trees by number of interesting nodes (descending)
         trees.sort(key=count_interesting, reverse=True)
 
@@ -589,8 +718,9 @@ def call_graph_cmd(
         if summary:
             if security_findings:
                 from rich.tree import Tree
+
                 summary_tree = Tree("[bold magenta]Security Summary[/bold magenta]")
-                
+
                 # Group by Category -> Sink -> (Entry + File)
                 grouped = {}
                 for f in security_findings:
@@ -598,7 +728,7 @@ def call_graph_cmd(
                     sink = f["sink"]
                     entry = f["entry"]
                     loc = f["file"]
-                    
+
                     if cat not in grouped:
                         grouped[cat] = {}
                     if sink not in grouped[cat]:
@@ -612,10 +742,12 @@ def call_graph_cmd(
                         sink_node = cat_node.add(f"[bold red]{sink}[/bold red]")
                         for entry_info in sorted(entries):
                             sink_node.add(entry_info)
-                
+
                 console.print(summary_tree)
             else:
-                console.print("[bold green]No dangerous sinks identified in the explored paths.[/bold green]")
+                console.print(
+                    "[bold green]No dangerous sinks identified in the explored paths.[/bold green]"
+                )
 
 
 @app.command(name="list-methods")
@@ -630,6 +762,9 @@ def list_methods_cmd(
     ),
     language: str | None = typer.Option(
         None, "--lang", "-l", help="Language filter (java, csharp, python, javascript)."
+    ),
+    entry_only: bool = typer.Option(
+        False, "--entry-only", help="Only list methods with 0 in-degree (potential entry points)."
     ),
     joern_parse_args: str | None = typer.Option(
         None,
@@ -689,7 +824,7 @@ def list_methods_cmd(
             result = analyzer.list_calls(pattern)
             title = "Called Methods"
         else:
-            result = analyzer.list_methods(pattern)
+            result = analyzer.list_methods(pattern, entry_points_only=entry_only)
             title = "Method Definitions"
 
         if not result:
@@ -861,6 +996,102 @@ def query_cmd(
 
         console.print("\n[bold]Query Result:[/bold]\n")
         console.print(result.unwrap())
+
+
+@app.command(name="pack-repo")
+def pack_repo_cmd(
+    path: str = typer.Argument(".", help="Path to the source code."),
+    output: str = typer.Option("packed_repo.txt", "--output", "-o", help="Output file path."),
+    max_tokens: int = typer.Option(100000, "--max-tokens", "-t", help="Maximum tokens."),
+    language: str | None = typer.Option(None, "--lang", "-l", help="Language filter."),
+    joern_parse_args: str | None = typer.Option(
+        None, "--joern-parse-args", help="Extra frontend args passed to joern-parse."
+    ),
+    no_analysis: bool = typer.Option(
+        False, "--no-analysis", help="Skip deep analysis (faster, less accurate scoring)."
+    ),
+    verbose: bool = typer.Option(False, "--verbose", help="Show detailed analysis logs."),
+    call_graph_pattern: str | None = typer.Option(
+        None, "--call-graph-pattern", help="Regex to filter call-graph entry points."
+    ),
+    call_graph_exclude: list[str] | None = typer.Option(
+        None, "--call-graph-exclude", help="Regex patterns to exclude from call graph."
+    ),
+):
+    """
+    Packs the repository into a single text file, prioritizing security-critical code.
+    Designed for LLM context optimization.
+    """
+    abs_path = os.path.abspath(path)
+    if not os.path.exists(abs_path):
+        console.print(f"[bold danger]Error:[/bold danger] Path '{abs_path}' does not exist.")
+        raise typer.Exit(1)
+
+    from .packer import RepoPacker
+
+    analyzer = None
+    if not no_analysis:
+        analyzer = Analyzer(verbose=verbose)
+        console.print("")
+        with analyzer:  # Use context manager to start/stop session
+            with console.status(
+                f"[bold info]Analyzing Codebase at {abs_path}...[/bold info]",
+                spinner="dots",
+            ) as status:
+                lang_map = {
+                    "python": "PYTHONSRC",
+                    "java": "JAVASRC",
+                    "csharp": "CSHARP",
+                    "javascript": "JSSRC",
+                }
+                extra_args = shlex.split(joern_parse_args) if joern_parse_args else None
+                res = analyzer.load_code(
+                    abs_path,
+                    language=lang_map.get(language.lower()) if language else None,
+                    joern_parse_args=extra_args,
+                )
+                if not res:
+                    console.print(
+                        f"[yellow]Analysis load failed: {res.failure()}. "
+                        "Proceeding with static packing only.[/yellow]"
+                    )
+                    analyzer = None
+                else:
+                    # Successfully loaded, now pack within the analyzer context
+                    packer = RepoPacker(
+                        abs_path,
+                        analyzer=analyzer,
+                        language=language,
+                        console=console,
+                        call_graph_pattern=call_graph_pattern,
+                        call_graph_exclude=call_graph_exclude,
+                    )
+                    # Exclude the output file from being packed into itself
+                    rel_output = os.path.relpath(os.path.abspath(output), abs_path)
+                    packed_content = packer.pack(
+                        max_tokens=max_tokens, exclude_files=[rel_output], status=status
+                    )
+
+                    with open(output, "w", encoding="utf-8") as f:
+                        f.write(packed_content)
+
+                    console.print(f"[bold success]Repository packed to {output}[/bold success]")
+                    return  # Exit early after successful packed in context
+
+    # Fallback for no_analysis or failed load
+    packer = RepoPacker(
+        abs_path,
+        analyzer=None,
+        language=language,
+        console=console,
+        call_graph_pattern=call_graph_pattern,
+        call_graph_exclude=call_graph_exclude,
+    )
+    rel_output = os.path.relpath(os.path.abspath(output), abs_path)
+    packed_content = packer.pack(max_tokens=max_tokens, exclude_files=[rel_output])
+    with open(output, "w", encoding="utf-8") as f:
+        f.write(packed_content)
+    console.print(f"[bold success]Repository packed to {output}[/bold success]")
 
 
 def main() -> None:

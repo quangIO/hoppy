@@ -175,15 +175,18 @@ CAPABILITIES = {
         ),
     },
     "javascript": {
-        "File System": r"(?i).*(fs[:\.](read|write|append|open|link|mkdir|rm)|path[:\.]).*",
+        "File System": (
+            r"(?i).*((fs[:\.]|fs/)(read|write|append|open|link|mkdir|rm|create|readdir|"
+            r"unlink)|path[:\.]).*"
+        ),
         "Database": (
             r"(?i).*(execute|query|sql|mongo|redis|sequelize|mongoose|knex|prisma|"
-            r"pg-pool|typeorm|createQueryBuilder|([a-z0-9]"
+            r"pg-pool|pg[:\.]|mysql|mysql2|typeorm|createQueryBuilder|([a-z0-9]"
             r"(Repository|Repo|Model|Context|Db)[:\.](save|update|delete|insert|remove|"
             r"count|increment|decrement|find|get)(One|By|And|Many|All|Raw|AndCount)?\b)).*"
         ),
         "Network": (
-            r"(?i).*(http[:\.]|socket[:\.]|axios|node-fetch|request[:\.]|got[:\.]|"
+            r"(?i).*(http[:\.]|socket[:\.]|axios|node-fetch|request[:\.]|fetch\b|got[:\.]|"
             r"superagent|nodemailer|([a-z0-9](Client|Http|Api)[:\.]"
             r"(get|post|put|delete|patch|head)\b)).*"
         ),
